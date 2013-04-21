@@ -1,11 +1,35 @@
 /*
- * Copyright @ konghan, All rights reserved.
+ * copyright (c) 2013, Konghan. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met: 
+ * 1. Redistributions of source code must retain the above copyright notice, 
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution. 
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR 
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR 
+ * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
+ * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
+ * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
+ * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ * The views and conclusions contained in the software and documentation are
+ * those of the authors and should not be interpreted as representing official
+ * policies, either expressed or implied.
  */
 
-#ifndef __EDNET_H__
-#define __EDNET_H__
+#ifndef __EDPNET_H__
+#define __EDPNET_H__
 
-#include "edap_sys.h"
+#include "edp_sys.h"
 
 #include "list.h"
 
@@ -13,57 +37,57 @@
 extern "C" {
 #endif
 
-struct ednet_ipv4_addr{
+struct edpnet_ipv4_addr{
     uint32_t	eia_ip;
     short	eia_port;
 };
 
-struct ednet_ipv6_addr{
+struct edpnet_ipv6_addr{
 };
 
-enum ednet_addr_type{
-    kEDNET_ADDR_TYPE_IPV4 = 0,
-    kEDNET_ADDR_TYPE_IPV6,
+enum edpnet_addr_type{
+    kEDPNET_ADDR_TYPE_IPV4 = 0,
+    kEDPNET_ADDR_TYPE_IPV6,
 };
 
-typedef struct ednet_addr{
+typedef struct edpnet_addr{
     int	    ea_type;
     union{
-	struct ednet_ipv4_addr	ea_v4;
-	struct ednet_ipv6_addr	ea_v6;
+	struct edpnet_ipv4_addr	ea_v4;
+	struct edpnet_ipv6_addr	ea_v6;
     };
-}ednet_addr_t;
+}edpnet_addr_t;
 
-struct ednet_socket;
-typedef struct ednet_socket *ednet_socket_t;
+struct edpnet_sock;
+typedef struct edpnet_sock *edpnet_sock_t;
 
-enum ednet_error_code{
-    EDNET_ERR_TIMEOUT = 1024,
-    EDNET_ERR_CLOSE,
+enum edpnet_error_code{
+    kEDPNET_ERR_TIMEOUT = 1024,
+    kEDPNET_ERR_CLOSE,
 };
 
-enum ednet_socket_event{
-//    EDNET_SOCKET_EVENT_CONNECT = 0,
-//    EDNET_SOCKET_EVENT_DATA,
-    kEDNET_SOCKET_EVENT_END,
-    kEDNET_SOCKET_EVENT_TIMEOUT,
-//    EDNET_SOCKET_EVENT_DRAIN,
-//    EDNET_SOCKET_EVENT_ERROR, in close
-//    EDNET_SOCKET_EVENT_CLOSE,
+enum edpnet_sock_event{
+//    kEDPNET_SOCK_EVENT_CONNECT = 0,
+//    kEDPNET_SOCK_EVENT_DATA,
+    kEDPNET_SOCK_EVENT_END,
+    kEDPNET_SOCK_EVENT_TIMEOUT,
+//    kEDPNET_SOCK_EVENT_DRAIN,
+//    kEDPNET_SOCK_EVENT_ERROR, in close
+//    kEDPNET_SOCK_EVENT_CLOSE,
 };
 
-typedef struct ednet_socket_callback{
-    void (*socket_connect)(ednet_socket_t sock, int errcode);
-    void (*data_ready)(ednet_socket_t sock, size_t size);
-    void (*data_drain)(ednet_socket_t sock);
-    void (*socket_close)(ednet_socket_t sock, int errcode);
-}ednet_socket_callback_t;
+typedef struct edpnet_sock_cbs{
+    void (*sock_connect)(edpnet_sock_t sock, int errcode);
+    void (*data_ready)(edpnet_sock_t sock, size_t size);
+    void (*data_drain)(edpnet_sock_t sock);
+    void (*sock_close)(edpnet_sock_t sock, int errcode);
+}edpnet_sock_cbs_t;
 
-typedef void (*ednet_rwcb)(ednet_socket_t sock, ednet_ioctx_t *ioctx, int errcode);
+typedef void (*edpnet_rwcb)(edpnet_sock_t sock, edpnet_ioctx_t *ioctx, int errcode);
 
-enum ednet_iocontext_type{
-    kEDNET_IOCTX_TYPE_IOVEC = 0,
-    kEDNET_IOCTX_TYPE_IODATA,
+enum edpnet_iocontext_type{
+    kEDPNET_IOCTX_TYPE_IOVEC = 0,
+    kEDPNET_IOCTX_TYPE_IODATA,
 };
 
 struct sglist{
@@ -71,11 +95,11 @@ struct sglist{
     void	*sgl_data;
 };
 
-typedef struct ednet_iocontext{
+typedef struct edpnet_iocontext{
     struct list_head	ec_node;    // link to owner
     uint32_t		ec_type;
-    ednet_rwcb		ec_iocb;
-    ednet_socket_t	ec_sock;
+    edpnet_rwcb		ec_iocb;
+    edpnet_sock_t	ec_sock;
 
     union{
 	struct{
@@ -88,51 +112,47 @@ typedef struct ednet_iocontext{
 	};
     };
 
-}ednet_ioctx_t;
+}edpnet_ioctx_t;
 
 
-int ednet_socket_create(ednet_socket_t *sock);
-int ednet_socket_destroy(ednet_socket_t sock);
+int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs);
+int edpnet_sock_destroy(edpnet_sock_t sock);
 
-int ednet_socket_setcallback(ednet_socket_t sock, ednet_socket_callback_t *cb);
+int edpnet_sock_connect(edpnet_sock_t sock, edpnet_addr_t *addr);
+int edpnet_sock_close(edpnet_sock_t sock);
 
-int ednet_socket_connect(ednet_socket_t sock, ednet_addr_t *addr);
-int ednet_socket_close(ednet_socket_t sock);
+int edpnet_sock_write(edpnet_sock_t sock, edpnet_ioctx_t *ioctx, edpnet_rwcb cb);
+int edpnet_sock_read(edpnet_sock_t sock, edpnet_ioctx_t *ioctx, edpnet_rwcb cb);
 
-int ednet_socket_write(ednet_socket_t sock, ednet_ioctx_t *ioctx, ednet_rwcb cb);
-int ednet_socket_read(ednet_socket_t sock, ednet_ioctx_t *ioctx, ednet_rwcb cb);
+// serv 
+struct edpnet_serv;
+typedef struct edpnet_serv *edpnet_serv_t;
 
-// server 
-struct ednet_server;
-typedef struct ednet_server *ednet_server_t;
-
-//enum ednet_server_event{
-//    EDNET_SERVER_EVENT_LISTENING = 0,
-//    EDNET_SERVER_EVENT_CONNECTION,
-//    EDNET_SERVER_EVENT_CLOSE,
-//    EDNET_SERVER_EVENT_ERROR,
+//enum edpnet_serv_event{
+//    kEDPNET_SERV_EVENT_LISTENING = 0,
+//    kEDPNET_SERV_EVENT_CONNECTION,
+//    kEDPNET_SERV_EVENT_CLOSE,
+//    kEDPNET_SERV_EVENT_ERROR,
 //};
-typedef struct ednet_server_callback{
-    int (*listening)(ednet_server_t *svr, int errcode);
-    int (*connected)(ednet_server_t *svr, ednet_socket_t sock, int errcode);
-    int (*close)(ednet_server_t *svr, int errcode);
-//    int (*error)(ednet_server_t *svr, int errcode);
-}ednet_server_callback_t;
+typedef struct edpnet_serv_cbs{
+    int (*listening)(edpnet_serv_t serv, int errcode);
+    int (*connected)(edpnet_serv_t serv, edpnet_sock_t sock, int errcode);
+    int (*close)(edpnet_serv_t serv, int errcode);
+//    int (*error)(edpnet_serv_t *svr, int errcode);
+}edpnet_serv_cbs_t;
 
-int ednet_server_create(ednet_server_t *svr);
-int ednet_server_destroy(ednet_server_t svr);
+int edpnet_serv_create(edpnet_serv_t *serv, edpnet_serv_cbs_t *cbs);
+int edpnet_serv_destroy(edpnet_serv_t serv);
 
-int ednet_server_setcallback(ednet_server_t svr, ednet_server_callback_t *cb);
+int edpnet_serv_listen(edpnet_serv_t serv, edpnet_addr_t *addr);
+int edpnet_serv_close(edpnet_serv_t serv);
 
-int ednet_server_listen(ednet_server_t svr, ednet_addr_t *addr);
-int ednet_server_close(ednet_server_t svr);
-
-int ednet_init();
-int ednet_fini();
+int edpnet_init();
+int edpnet_fini();
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif // __EDNET_H__
+#endif // __EDPNET_H__
 

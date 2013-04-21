@@ -60,6 +60,8 @@ int edp_init(int thread_num){
 	goto exit_worker;
     }
 
+    log_info("edp.io have initialized\n");
+
     return 0;
 
 exit_worker:

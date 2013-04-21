@@ -166,9 +166,9 @@ static int worker_init(worker_t *wk){
     ASSERT(wk != NULL);
 
     wk->wk_epoll = epoll_create(EPOLL_MAX_EVENTS);
-    if(wk->wk_epoll != 0){
-	log_warn("epoll create fail!\n");
-	return wk->wk_epoll;
+    if(wk->wk_epoll < 0){
+	log_warn("epoll create fail:\n", errno);
+	return -errno;
     }
 
     wk->wk_init = 1;
@@ -299,7 +299,13 @@ exit_mcache:
 }
 
 int worker_loop(){
-    return -1;
+    
+    log_info("loop event ...\n");
+
+    while(1){
+	sleep(10);
+    }
+    return 0;
 }
 
 int worker_stop(){
