@@ -38,6 +38,7 @@ typedef struct edpnet_data{
     int			ed_init;
 
     spi_spinlock_t	ed_lock;
+
     struct list_head	ed_socks;
     struct list_head	ed_servs;
 }edpnet_data_t;
@@ -71,6 +72,38 @@ struct edpnet_sock{
 
     edpnet_sock_cbs_t	es_cbs;
 };
+
+static int sock_write(int sock, edpnet_ioctx_t *io){
+    int		ret = -1;
+
+    ASSERT(io != NULL);
+    
+    switch(io->ec_type){
+	case kEDPNET_IOCTX_TYPE_IOVEC:
+	    ret = writev(sock, io->ec_iov, io->ec_ionr);
+	    break;
+
+	case kEDPNET_IOCTX_TYPE_IODATA:
+	    ret = write(sock, io->ec_data, io->ec_size);
+	    break;
+
+	default:
+	    ASSERT(0);
+	    break;
+    }
+
+    if(ret < 0){
+	if((errno == EAGAIN) || (errno == EWOULDBLOCK)){
+	    ret = 0;
+	}else{
+	    ret = -errno;
+	}
+    }
+
+    return ret;
+}
+
+
  
 static void sock_worker_cb(uint32_t events, void *data){
     struct edpnet_sock	*s = (struct edpnet_sock *)data;
@@ -103,24 +136,44 @@ static void sock_worker_cb(uint32_t events, void *data){
 	ASSERT(s->es_status & kEDPNET_SOCK_STATUS_CONNECT);
 	
 	if(s->es_pendios){
+	    // current write io is ok
 	    spi_spin_lock(&s->es_lock);
 	    ASSERT(!list_empty(&s->es_iowrites));
 	    lhc = s->es_iowrites.next;
 	    list_del(lhc);
-	    if(!list_empty(&s->es_iowrites)){
-		lhn = s->es_iowrites.next;
-	    }else{
-		s->es_status &= ~kEDPNET_SOCK_STATUS_WRITE;
-	    }
+	    atomic_dec(&s->es_pendios);
 	    spi_spin_unlock(&s->es_lock);
 
-	    if(lhn != NULL){
-		// FIXME:write data
+	    // write next io to sock
+	    while(s->es_pendios){
+		spi_spin_lock(&s->es_lock);
+		ASSERT(!list_empty(&s->es_iowrites));
+		lhn = s->es_iowrites.next;
+		ion = list_entry(lhn, edpnet_ioctx_t, ec_node);
+
+		ret = sock_write(s->es_sock, ion);
+		if(ret < 0){
+		    list_del(lhn);
+		    atomic_dec(&s->es_pendios);
+
+		    spi_spin_unlock(&s->es_lock);
+		    ion->ec_iocb(s, ion, ret);
+		    spi_spin_lock(&s->es_lock);
+		}else{
+		    spi_spin_unlock(&s->es_lock);
+		    break;
+		}
 	    }
 
-	    ioc = list_entry(lhc, ec_node);
-	    ioc->ec_iocb(s, ioc, 0);
+	    if(s->es_pendios == 0){
+		spi_spin_lock(&s->es_lock);
+		s->es_status &= ~kEDPNET_SOCK_STATUS_WRITE;
+		spi_spin_unlock(&s->es_lock);
+	    }
 
+	    // current write io callback
+	    ioc = list_entry(lhc, edpnet_ioctx_t, ec_node);
+	    ioc->ec_iocb(s, ioc, 0);
 	}else{
 	    s->es_cbs.data_drain(s);
 	}
@@ -128,8 +181,8 @@ static void sock_worker_cb(uint32_t events, void *data){
 
     if(events & EPOLLERR){
 	s->es_cbs.sock_error(s, -1);
-	//FIXME: write error...
-    }
+	//FIXME: clear pending writes
+   }
     
     if(events | EPOLLHUP){
 	spi_spin_lock(&s->es_lock);
@@ -137,18 +190,14 @@ static void sock_worker_cb(uint32_t events, void *data){
 	spi_spin_unlock(&s->es_lock);
 
 	s->es_cbs.sock_close(s, -1);
+
+	//FIXME: clear pending writes
     }
 }
 
-static int edpnet_sock_init(edpnet_data_t *ed, edpnet_sock_t sock){
+static int sock_init(edpnet_sock_t sock){
     struct edpnet_sock	*s = sock;
-
-    s->es_sock = sock(PF_INET, SOCK_STREAM, 0);
-    if(s->es_sock < 0){
-	log_warn("init sock failure!\n");
-	return -1;
-    }
-
+    
     if(set_nonblock(s->es_sock) < 0){
 	close(s->es_sock);
 	return -1;
@@ -158,24 +207,19 @@ static int edpnet_sock_init(edpnet_data_t *ed, edpnet_sock_t sock){
     INIT_LIST_HEAD(&s->es_ioreads);
     INIT_LIST_HEAD(&s->es_iowrites);
 
+    spi_spin_init(&s->es_lock);
+    s->es_status |= kEDPNET_SOCK_STATUS_INIT;
+
     if(watch_add(s->es_sock, sock_worker_cb, s) != 0){
 	log_warn("watch sock handle fail!\n");
 	close(s->es_sock);
 	return -1;
     }
 
-    spi_spin_init(&s->es_lock);
-
-    s->es_status |= kEDPNET_SOCK_STATUS_INIT;
-
-    spi_spin_lock(&ed->ed_lock);
-    list_add(&s->es_node, &ed->ed_socks);
-    spi_spin_unlock(&ed->ed_lock);
-
     return 0;
 }
 
-static int edpnet_sock_fini(edpnet_data_t *ed, edpnet_sock_t sock){
+static int sock_fini(edpnet_data_t *ed, edpnet_sock_t sock){
     struct edpnet_sock	*s = sock;
 
     if(s->es_status != 0){
@@ -187,10 +231,6 @@ static int edpnet_sock_fini(edpnet_data_t *ed, edpnet_sock_t sock){
 
     ASSERT(list_empty(&s->es_ios));
     spi_spin_fini(&s->es_lock);
-
-    spi_spin_lock(&ed->ed_lock);
-    list_del(&s->es_node);
-    spi_spin_unlock(&ed->ed_lock);
 
     return 0;
 }
@@ -211,8 +251,15 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs){
 	return -ENOMEM;
     }
     memset(s, sizeof(*s));
+    
+    s->es_sock = socked(PF_INET, SOCK_STREAM, 0);
+    if(s->es_sock < 0){
+	log_warn("init sock failure!\n");
+	mheap_free(s);
+	return -1;
+    }
 
-    ret = edpnet_sock_init(ed, s);
+    ret = sock_init(s);
     if(ret != 0){
 	log_warn("initialize sock failure!\n");
 	mheap_free(s);
@@ -236,7 +283,7 @@ int edpnet_sock_destroy(edpnet_sock_t sock){
     }
 
     s->es_status = kEDPNET_SOCK_STATUS_ZERO;
-    edpnet_sock_fini(ed, sock);
+    sock_fini(ed, sock);
     close(s->es_sock);
 
     mheap_free(s);
@@ -355,6 +402,13 @@ int edpnet_sock_read(edpnet_sock_t sock, edpnet_ioctx_t *io){
 /*
  * edpnet - serv implementation
  */
+enum{
+    kEDPNET_SERV_STATUS_ZERO = 0,
+    kEDPNET_SERV_STATUS_INIT,
+    kEDPNET_SERV_STATUS_LISTEN,
+    kEDPNET_SERV_STATUS_LISTENING,
+};
+
 struct edpnet_serv{
     int			es_status;
 
@@ -365,20 +419,137 @@ struct edpnet_serv{
     struct list_head	es_socks;	// connected clients
 
     edpnet_serv_cbs_t	es_cbs;
+    void		*es_data;
 };
 
-typedef struct edpnet_serv_cbs{
-    int (*listening)(edpnet_serv_t serv, int errcode);
-    int (*connected)(edpnet_serv_t serv, edpnet_sock_t sock, int errcode);
-    int (*close)(edpnet_serv_t serv, int errcode);
-//    int (*error)(edpnet_serv_t *svr, int errcode);
-}edpnet_serv_cbs_t;
+static void serv_worker_cb(uint32_t events, void *data){
+    struct edpnet_serv *s = (struct edpnet_serv *)data;
+    struct edpnet_sock *sock;
 
-int edpnet_serv_create(edpnet_serv_t *serv, edpnet_serv_cbs_t *cbs);
-int edpnet_serv_destroy(edpnet_serv_t serv);
+    ASSERT(s != NULL);
 
-int edpnet_serv_listen(edpnet_serv_t serv, edpnet_addr_t *addr);
-int edpnet_serv_close(edpnet_serv_t serv);
+    if(events & EPOLLIN){
+	sock = mheap_alloc(sizeof(*sock));
+	if(sock == NULL){
+	    log_warn("no memory for sock!\n");
+	    return ;
+	}
+	memset(sock, 0, sizeof(*sock));
+
+	sock->es_sock = accept(s->es_sock, NULL, NULL);
+	if(sock->es_sock < 0){
+	    log_warn("accept client fail!\n");
+	    return ;
+	}
+	
+	if(sock_init(sock) < 0){
+	    sock_fini(sock);
+	    mheap_free(sock);
+	}else{
+	    s->es_cbs.connected(s, sock, s->es_data);
+	}
+    }
+
+    if(events & EPOLLOUT){
+	ASSERT(0);
+    }
+
+    if(events & (EPOLLERR | EPOLLHUP)){
+	s->es_cbs.close(s, s->es_data);
+    }
+}
+
+int edpnet_serv_create(edpnet_serv_t *serv, edpnet_serv_cbs_t *cbs, void *data){
+    struct edpnet_serv	    *s;
+
+    ASSERT((serv != NULL) && (cbs != NULL));
+
+    s = mheap_alloc(sizeof(*s));
+    if(s == NULL){
+	log_warn("no enough memory for serv!\n");
+	return -ENOMEM;
+    }
+    memset(s, 0, sizeof(*s));
+
+    INIT_LIST_HEAD(&s->es_node);
+    INIT_LIST_HEAD(&s->es_socks);
+    s->es_cbs = cbs;
+    s->es_data = data;
+
+    s->es_sock = socked(PF_INET, SOCK_STREAM, 0);
+    if(s->es_sock < 0){
+	log_warn("init sock failure!\n");
+	mheap_free(s);
+	return -1;
+    }
+
+    if(set_nonblock(s->es_sock) < 0){
+	close(s->es_sock);
+	mheap_free(s);
+	return -1;
+    }
+
+    spi_spin_init(&s->es_lock);
+
+    if(watch_add(s->es_sock, serv_worker_cb, s) != 0){
+	log_warn("watch serv handle fail!\n");
+	spi_spin_fini(&s->es_lock);
+	close(s->es_sock);
+	mheap_free(s);
+	return -1;
+    }
+
+    s->es_status = kEDPNET_SERV_STATUS_INIT;
+
+    *serv = s;
+
+    return 0;
+}
+
+int edpnet_serv_destroy(edpnet_serv_t serv){
+    struct edpnet_serv	*s = serv;
+
+    ASSERT(s != NULL);
+
+    watch_del(s->es_sock);
+
+    spi_spin_lock(&s->es_lock);
+    s->es_status = kEDPNET_SERV_STATUS_ZERO;
+    spi_spin_unlock(&s->es_lock);
+
+    close(s->es_sock);
+
+    spi_spin_fini(&s->es_lock);
+
+    mheap_free(s);
+
+    return 0;
+}
+
+int edpnet_serv_listen(edpnet_serv_t serv, edpnet_addr_t *addr){
+    struct edpnet_serv	*s = serv;
+    struct sockaddr_in	sa;
+    int			ret;
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family	= AF_INET;
+    sa.sin_port		= htons(addr->ea_port);
+    sa.sin_addr.s_addr	= addr->ea_ip;
+
+    ret = bind(s->es_sock, &sa, sizeof(sa));
+    if(ret < 0){
+	return ret;
+    }
+
+    ret = listen(s->es_sock, EDPNET_SERV_PENDCLIENT);
+    if(ret == 0){
+	spi_spin_lock(&s->es_lock);
+	s->es_status |= kEDPNET_SERV_STATUS_LISTEN;
+	spi_spin_unlock(&s->es_lock);
+    }
+
+    return ret;
+}
 
 int edpnet_init(){
     return -1;

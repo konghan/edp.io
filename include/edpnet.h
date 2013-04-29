@@ -77,11 +77,11 @@ enum edpnet_sock_event{
 };
 
 typedef struct edpnet_sock_cbs{
-    void (*sock_connect)(edpnet_sock_t sock, int errcode);
-    void (*data_ready)(edpnet_sock_t sock, size_t size);
-    void (*data_drain)(edpnet_sock_t sock);
-    void (*sock_error)(edpnet_sock_t sock, int errcode);
-    void (*sock_close)(edpnet_sock_t sock, int errcode);
+    void (*sock_connect)(edpnet_sock_t sock, void *data);
+    void (*data_ready)(edpnet_sock_t sock, void *data);
+    void (*data_drain)(edpnet_sock_t sock, void *data);
+    void (*sock_error)(edpnet_sock_t sock, void *data);
+    void (*sock_close)(edpnet_sock_t sock, void *data);
 }edpnet_sock_cbs_t;
 
 typedef void (*edpnet_rwcb)(edpnet_sock_t sock, edpnet_ioctx_t *ioctx, int errcode);
@@ -117,8 +117,10 @@ typedef struct edpnet_iocontext{
 }edpnet_ioctx_t;
 
 
-int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs);
+int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data);
 int edpnet_sock_destroy(edpnet_sock_t sock);
+
+int edpnet_sock_set(edpnet_sock_t sock, edpnet_sock_cbs_t *cbs, void *data);
 
 int edpnet_sock_connect(edpnet_sock_t sock, edpnet_addr_t *addr);
 int edpnet_sock_close(edpnet_sock_t sock);
@@ -137,13 +139,13 @@ typedef struct edpnet_serv *edpnet_serv_t;
 //    kEDPNET_SERV_EVENT_ERROR,
 //};
 typedef struct edpnet_serv_cbs{
-    int (*listening)(edpnet_serv_t serv, int errcode);
-    int (*connected)(edpnet_serv_t serv, edpnet_sock_t sock, int errcode);
-    int (*close)(edpnet_serv_t serv, int errcode);
+//    int (*listening)(edpnet_serv_t serv, int errcode);
+    int (*connected)(edpnet_serv_t serv, edpnet_sock_t sock, void *data);
+    int (*close)(edpnet_serv_t serv, void *data);
 //    int (*error)(edpnet_serv_t *svr, int errcode);
 }edpnet_serv_cbs_t;
 
-int edpnet_serv_create(edpnet_serv_t *serv, edpnet_serv_cbs_t *cbs);
+int edpnet_serv_create(edpnet_serv_t *serv, edpnet_serv_cbs_t *cbs, void *data);
 int edpnet_serv_destroy(edpnet_serv_t serv);
 
 int edpnet_serv_listen(edpnet_serv_t serv, edpnet_addr_t *addr);
