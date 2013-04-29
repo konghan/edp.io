@@ -80,6 +80,7 @@ typedef struct edpnet_sock_cbs{
     void (*sock_connect)(edpnet_sock_t sock, int errcode);
     void (*data_ready)(edpnet_sock_t sock, size_t size);
     void (*data_drain)(edpnet_sock_t sock);
+    void (*sock_error)(edpnet_sock_t sock, int errcode);
     void (*sock_close)(edpnet_sock_t sock, int errcode);
 }edpnet_sock_cbs_t;
 
@@ -97,9 +98,10 @@ struct sglist{
 
 typedef struct edpnet_iocontext{
     struct list_head	ec_node;    // link to owner
-    uint32_t		ec_type;
+    uint32_t		ec_type;    // IOVEC or IODATA
     edpnet_rwcb		ec_iocb;
     edpnet_sock_t	ec_sock;
+    uint32_t		ec_read;
 
     union{
 	struct{

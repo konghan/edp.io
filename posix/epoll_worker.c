@@ -32,21 +32,26 @@
 #include "logger.h"
 #include "mcache.h"
 #include "hset.h"
+#include "atomic.h"
 
 #include <sys/epoll.h>
 #include <unistd.h>
 
 #define EPOLL_MAX_EVENTS	    32
 
+// worker thread's data
 typedef struct worker{
     int			wk_init;
     
     int			wk_epoll;
     spi_thread_t	wk_thread;
 
+    atomic_t		wk_fds;
+
     uint64_t		wk_events;  // processed events
 }worker_t;
    
+// event used by worker
 typedef struct worker_event{
     hset_entry_t	we_ent;
 
@@ -57,12 +62,14 @@ typedef struct worker_event{
     void		*we_data;
 }worker_event_t;
 
+// epoll worker control data
 typedef struct worker_data{
     int			wd_init;
 
-    int			wd_num;
+    int			wd_num;	    // workers number
     spi_spinlock_t	wd_lock;
-    int			wd_round;
+
+    int			wd_round;   // round-robin
     
     mcache_t		wd_evcache;
     hset_t		wd_fds;
@@ -76,10 +83,12 @@ static inline worker_data_t *worker_get(){
     return __worker_data;
 }
 
+// select light load worker thread
 static worker_t *worker_lightload(){
     worker_data_t   *wd = worker_get();
     int		    idx;
 
+    // FIXME: determine witch one is light load
     spi_spin_lock(&wd->wd_lock);
     idx = wd->wd_round++ % wd->wd_num;
     spi_spin_lock(&wd->wd_lock);
@@ -129,6 +138,7 @@ int watch_add(int fd,  worker_event_cb cb, void *data){
 	mcache_free(wd->wd_evcache, we);
 	return ret;
     }
+    atomic_inc(&wk->wk_fds);
 
     return 0;
 }
@@ -157,6 +167,7 @@ int watch_del(int fd){
 	return -ENOENT;
     }
 
+    atomic_dec(&wk->wk_fds);
     mcache_free(wd->wd_evcache, we);
 
     return 0;
@@ -226,7 +237,7 @@ static void *worker_routine(void *data){
 	    we = (worker_event_t *)ev->data.ptr;
 	    ASSERT(we != NULL);
 
-	    we->we_cb(we->we_data);
+	    we->we_cb(ev->events, we->we_data);
 	    wk->wk_events ++;
 	}
     }

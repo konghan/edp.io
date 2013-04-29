@@ -33,7 +33,7 @@
 extern "C" {
 #endif
 
-typedef void (*worker_event_cb)(void *data);
+typedef void (*worker_event_cb)(uint32_t events, void *data);
  
 int watch_add(int fd, worker_event_cb cb, void *data);
 int watch_del(int fd);

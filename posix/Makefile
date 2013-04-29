@@ -6,8 +6,9 @@ LDFLAGS = -pthread
 TARGET = edp.io
 
 objs = logger.o mcache.o hset.o
-
-objs += epoll_worker.o edp.o main.o
+objs += epoll_worker.o edp.o
+objs += edpnet.o
+objs += main.o
 
 vpath %.c ../src ../lib
 
