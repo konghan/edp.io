@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2013, Konghan. All rights reserved.
- * Distributed under the BSD license, see the accompanying
+ * Distributed under the BSD license, see the LICENSE file.
  */
 
 #include "emitter.h"
@@ -9,201 +9,226 @@
 #include "logger.h"
 #include "mcache.h"
 
-#define	EDPU_INSTANCE_MAGIC	0xedafedafedaf0000
 
-typedef struct edap_edpu{
-    uint64_t		eu_magic;
-    int			eu_init;
+#define	EMIT_INSTANCE_MAGIC	    0xedafedafedaf0000
 
-    spi_spinlock_t	eu_lock;
-    atomic64_t		eu_pendings;  
-//    struct list_head	eu_events;  // events belong to this edpu
-    struct list_head	eu_node;    // link to edpu master
+struct edp_emit{
+    uint64_t		ee_magic;
+    int			ee_init;
 
-    edpu_watch		eu_watch[EDPU_EVENT_TYPE_MAX];
+    spi_spinlock_t	ee_lock;
+    atomic_t		ee_pendings;  
+//    struct list_head	ee_events;  // events belong to this edpu
+    struct list_head	ee_node;    // link to emit master
 
-    void		*eu_data;   // owner's data
-}edpu_t;
+    emit_handler	ee_handler[EMIT_EVENT_TYPE_MAX];
 
-typedef struct edpu_data{
+    void		*ee_data;   // owner's data
+};
+
+typedef struct emit_data{
     int			ed_init;
     spi_spinlock_t	ed_lock;
-    struct list_head	ed_edpus;
-}edpu_data_t;
+    struct list_head	ed_emits;
+}emit_data_t;
 
-static edpu_data_t	__edpu_data = {};
+static emit_data_t	__emit_data = {};
 
-static int edpu_check(edpu_t *eu){
-    return eu->eu_magic == EDPU_INSTANCE_MAGIC;
+/*
+ * implemetations
+ */
+static inline emit_data_t *get_data(){
+    return &__emit_data;
 }
 
-static int edpu_default_watch(edpu_t *eu, edap_event_t *ev){
-    return -1;
+static int emit_check(emit_t em){
+    struct edp_emit *ee = em;
+
+    ASSERT(ee != NULL);
+    
+    return ee->ee_magic == EMIT_INSTANCE_MAGIC;
 }
 
-static void edpu_event_handler(void *edpu, struct edap_event *ev){
-    edpu_t	*eu = (edpu_t *)edpu;
-    int		errcode;
+static int emit_default_handler(emit_t em, edp_event_t *ev){
+    ASSERT(ev != NULL);
+    
+    log_warn("default watch event, type:%d\n", ev->ev_type);
+    return -ENOENT;
+}
 
-    ASSERT((edpu != NULL) && edpu_check(eu));
+static void emit_event_handler(void *emit, struct edp_event *ev){
+    struct edp_emit *ee = (struct edp_emit *)edpu;
+    int		    errcode;
+
+    ASSERT((emit != NULL) && emit_check(ee));
     ASSERT(ev != NULL);
 
-    if((ev->ev_type < 0) || (ev->ev_type >= EDPU_EVENT_TYPE_MAX)){
-	log_warn("event type overflow!\n");
-	edap_event_done(ev, ERANGE);
+    if((ev->ev_type < 0) || (ev->ev_type >= EMIT_EVENT_TYPE_MAX)){
+	log_warn("event type overflow:%d!\n", ev->ev_type);
+	edp_event_done(ev, -ERANGE);
 	return ;
     }
 
-    if(eu->eu_watch[ev->ev_type] == edpu_default_watch){
-	log_warn("no watch for this event!\n");
-	edap_event_done(ev, ENOENT);
+    if(ee->ee_handler[ev->ev_type] == emit_default_watch){
+	log_warn("no handler for this event:%d!\n", ev->ev_type);
+	edp_event_done(ev, -ENOENT);
 	return ;
     }
 
-    errcode = (eu->eu_watch[ev->ev_type])(eu, ev);
+    errcode = (ee->ee_handler[ev->ev_type])(ee, ev);
 
-//    spi_spin_lock(&eu->eu_lock);
+//    spi_spin_lock(&eu->ee_lock);
 //    list_del(&ev->ev_edpu);
-//    spi_spin_unlock(&eu->eu_lock);
-    atomic64_dec(&eu->eu_pendings);
+//    spi_spin_unlock(&eu->ee_lock);
+    atomic_dec(&eu->ee_pendings);
 
-    edap_event_done(ev, errcode);
+    edp_event_done(ev, errcode);
 }
 
-int edpu_dispatch(edpu_t *eu, edap_event_t *ev, edap_event_cb cb, void *data){
+int emit_dispatch(emit_t em, edp_event_t *ev, edp_event_cb cb, void *data){
+    struct edp_emit  *ee = em;
 
-    ASSERT(eu != NULL);
+    ASSERT(ee != NULL);
     ASSERT(ev != NULL);
 
-    if((ev->ev_type < 0) || (ev->ev_type >= EDPU_EVENT_TYPE_MAX)){
-	log_warn("event type overflow!\n");
+    if((ev->ev_type < 0) || (ev->ev_type >= emit_EVENT_TYPE_MAX)){
+	log_warn("event type overflow:%d!\n", ev->ev_type);
 	return -ERANGE;
     }
 
-    if(eu->eu_watch[ev->ev_type] == edpu_default_watch){
-	log_warn("no watch for this event!\n");
+    if(ee->ee_handler[ev->ev_type] == emit_default_watch){
+	log_warn("no handler for this event:%d!\n", ev->ev_type);
 	return -ENOENT;
     }
 
-    if(eu->eu_init == 0){
-	log_warn("edpu not initalized!\n");
+    if(ee->ee_init == 0){
+	log_warn("emit not initalized!\n");
 	return -EINVAL;
     }
 
     ev->ev_cb	= cb;
     ev->ev_data	= data;
-    ev->ev_handler = edpu_event_handler;
-    ev->ev_edpu	= eu;
+    ev->ev_handler = emit_event_handler;
+    ev->ev_emit	= ee;
 
-//    spi_spin_lock(&eu->eu_lock);
-//    list_add(&ev->ev_edpu, &eu->eu_events);
-//    spi_spin_unlock(&eu->eu_lock);
-    atomic64_inc(&eu->eu_pendings);
+//    spi_spin_lock(&eu->ee_lock);
+//    list_add(&ev->ev_edpu, &eu->ee_events);
+//    spi_spin_unlock(&eu->ee_lock);
+    atomic_inc(&eu->ee_pendings);
 
-    return edap_dispatch(ev);
+    return edp_dispatch(ev);
 }
 
-int edpu_add_watch(edpu_t *eu, int type, edpu_watch watch){
-    ASSERT(eu != NULL);
+int emit_add_handler(emit_t em, int type, emit_handler handler){
+    struct edp_emit *ee = em;
 
-    if((type < 0) || (type >= EDPU_EVENT_TYPE_MAX)){
-	log_warn("event type overflow!\n");
+    ASSERT(ee != NULL);
+
+    if((type < 0) || (type >= EMIT_EVENT_TYPE_MAX)){
+	log_warn("event type overflow:%d!\n", type);
 	return -ERANGE;
     }
 
-    eu->eu_watch[type] = watch;
+    eu->ee_handler[type] = handler;
     return 0;
 }
 
-int edpu_rmv_watch(edpu_t *eu, int type){
-    ASSERT(eu != NULL);
+int emit_rmv_watch(emit_t em, int type){
+    struct edp_emit *ee = em;
 
-    if((type < 0) || (type >= EDPU_EVENT_TYPE_MAX)){
-	log_warn("event type overflow!\n");
+    ASSERT(ee != NULL);
+
+    if((type < 0) || (type >= EMIT_EVENT_TYPE_MAX)){
+	log_warn("event type overflow:%d!\n", type);
 	return -ERANGE;
     }
 
-    eu->eu_watch[type] = edpu_default_watch;
+    eu->ee_handler[type] = emit_default_handler;
     return 0;
 }
 
-int edpu_create(void *data, edpu_t **eu){
-    edpu_t  *e;
+int emit_create(void *data, emit_t *em){
+    struct edp_emit  *ee;
     int	    i;
 
-    ASSERT(eu != NULL);
+    ASSERT(em != NULL);
 
-    e = (edpu_t *)spi_malloc(sizeof(*e));
-    if(e == NULL){
+    ee = (struct edp_emit *)mheap_alloc(sizeof(*ee));
+    if(ee == NULL){
 	log_warn("not enough memory!\n");
 	return -ENOMEM;
     }
-    memset(e, 0, sizeof(*e));
+    memset(ee, 0, sizeof(*ee));
 
-    e->eu_magic = EDPU_INSTANCE_MAGIC;
-    spi_spin_init(&e->eu_lock);
-    atomic64_reset(&e->eu_pendings);
-//    INIT_LIST_HEAD(&e->eu_events);
-    INIT_LIST_HEAD(&e->eu_node);
+    ee->ee_magic = emit_INSTANCE_MAGIC;
+    spi_spin_init(&ee->ee_lock);
+    atomic_reset(&ee->ee_pendings);
+//    INIT_LIST_HEAD(&ee->ee_events);
+    INIT_LIST_HEAD(&ee->ee_node);
 
-    for(i = 0; i < EDPU_EVENT_TYPE_MAX; i++){
-	e->eu_watch[i] = edpu_default_watch;
+    for(i = 0; i < EMIT_EVENT_TYPE_MAX; i++){
+	ee->ee_handler[i] = emit_default_handler;
     }
 
-    e->eu_data	= data;
-    e->eu_init	= 1;
+    ee->ee_data	= data;
+    ee->ee_init	= 1;
 
-    spi_spin_lock(&__edpu_data.ed_lock);
-    list_add(&e->eu_node, &__edpu_data.ed_edpus);
-    spi_spin_unlock(&__edpu_data.ed_lock);
+    spi_spin_lock(&__emit_data.ed_lock);
+    list_add(&ee->ee_node, &__emit_data.ed_emits);
+    spi_spin_unlock(&__emit_data.ed_lock);
 
-    *eu = e;
+    *em = ee;
 
     return 0;
 }
 
-int edpu_destroy(edpu_t *eu){
-    ASSERT(eu != NULL);
+int emit_destroy(emit_t em){
+    struct edp_emit *ee = em;
 
-    if(eu->eu_pendings != 0){
+    ASSERT(ee != NULL);
+
+    if(ee->ee_pendings != 0){
 	log_warn("edpu still have pending events!\n");
 	return -EINVAL;
     }
 
-    eu->eu_init = 0;
+    ee->ee_init = 0;
 
-    spi_spin_lock(&__edpu_data.ed_lock);
-    list_del(&eu->eu_node);
-    spi_spin_unlock(&__edpu_data.ed_lock);
+    spi_spin_lock(&__emit_data.ed_lock);
+    list_del(&ee->ee_node);
+    spi_spin_unlock(&__emit_data.ed_lock);
 
-    spi_spin_fini(&eu->eu_lock);
+    spi_spin_fini(&ee->ee_lock);
 
-    spi_free(eu);
+    mheap_free(ee);
 
     return 0;
 }
 
-void *edpu_get(edpu_t *eu){
-    ASSERT(eu != NULL);
+void *emit_get(emit_t em){
+    struct edp_emit *ee = em;
 
-    return eu->eu_data;
+    ASSERT(ee != NULL);
+
+    return ee->ee_data;
 }
 
-void *edpu_set(edpu_t *eu, void *data){
-    void    *old;
+void *emit_set(emit_t em, void *data){
+    struct edp_emit *ee = em;
+    void	    *old;
 
-    ASSERT(eu != NULL);
+    ASSERT(ee != NULL);
 
-    spi_spin_lock(&eu->eu_lock);
-    old = eu->eu_data;
-    eu->eu_data = data;
-    spi_spin_unlock(&eu->eu_lock);
+    spi_spin_lock(&ee->ee_lock);
+    old = ee->ee_data;
+    ee->ee_data = data;
+    spi_spin_unlock(&ee->ee_lock);
 
     return old;
 }
 
-int edpu_init(){
-    edpu_data_t	*ed = &__edpu_data;
+int emit_init(){
+    emit_data_t	*ed = &__emit_data;
 
     if(ed->ed_init){
 	return 0;
@@ -211,20 +236,20 @@ int edpu_init(){
 
     ed->ed_init = 1;
     spi_spin_init(&ed->ed_lock);
-    INIT_LIST_HEAD(&ed->ed_edpus);
+    INIT_LIST_HEAD(&ed->ed_emits);
 
     return 0;
 }
 
-int edpu_fini(){
-    edpu_data_t	*ed = &__edpu_data;
+int emit_fini(){
+    emit_data_t	*ed = &__emit_data;
 
     if(ed->ed_init == 0){
 	return 0;
     }
 
     spi_spin_lock(&ed->ed_lock);
-    if(!list_empty(&ed->ed_edpus)){
+    if(!list_empty(&ed->ed_emits)){
 	spi_spin_unlock(&ed->ed_lock);
 	return -EINVAL;
     }
