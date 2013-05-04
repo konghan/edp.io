@@ -12,7 +12,9 @@
 extern "C" {
 #endif
 
-struct edp_emit
+#define kEMIT_EVENT_TYPE_MAX		16
+
+struct edp_emit;
 typedef struct edp_emit *emit_t;
 
 typedef int (*emit_handler)(emit_t em, edp_event_t *ev);

@@ -8,7 +8,7 @@
 
 #include "atomic.h"
 #include "logger.h"
-#include "slab.h"
+#include "mcache.h"
 
 #define HIGH_NORM_RATIO	    5
 
@@ -71,10 +71,10 @@ static inline worker_data_t *get_data(){
 static inline void worker_do_event(edp_event_t *ev){
     ASSERT((ev != NULL) && (ev->ev_handler != NULL));
 
-    ev->ev_handler(ev->ev_edpu, ev);
+    ev->ev_handler(ev->ev_emit, ev);
 }
 
-static int worker_init(worker_t *wkr){
+static int worker_init_tls(worker_t *wkr){
     ASSERT(wkr != NULL);
 
     __spi_mutex_init(&wkr->wk_mutex);
@@ -99,7 +99,7 @@ static int worker_init(worker_t *wkr){
     return 0;
 }
 
-static int worker_fini(worker_worker_t *wkr){
+static int worker_fini_tls(worker_t *wkr){
     ASSERT(wkr!= NULL);
 
     if(wkr->wk_status != kWORKER_STATUS_STOP){
@@ -133,7 +133,7 @@ static void *worker_routine(void *data){
     ASSERT(wkr != NULL);
 
     INIT_LIST_HEAD(&events);
-    worker_worker_init(wkr);
+    worker_init_tls(wkr);
 
     wkr->wk_status = kWORKER_STATUS_RUNNING;
 
@@ -271,12 +271,12 @@ idle_event:
     if(wkr->wk_idle_pending)
 	goto idle_event;
 
-    worker_worker_fini(wkr);
+    worker_fini_tls(wkr);
 
     return NULL;
 }
 
-int edp_dispatch(edp_event_t *ev){
+int __edp_dispatch(edp_event_t *ev){
     worker_data_t	*wd = get_data();
     worker_t		*wkr;
     spi_spinlock_t	*lock;
@@ -304,7 +304,7 @@ int edp_dispatch(edp_event_t *ev){
 	    pendings = &wkr->wk_crit_pending;
 	    break;
 
-	case kEDP_EVENT_PRIORITY_EMERG:
+	case kEDP_EVENT_PRIORITY_EMRG:
 	    lock = &wkr->wk_emrg_lock;
 	    lh   = &wkr->wk_emrg_events;
 	    pendings = &wkr->wk_emrg_pending;
@@ -371,7 +371,7 @@ int worker_init(int thread){
 	    wkr = &(wd->wd_threads[i]);
 	    spi_thread_destroy(wkr->wk_thread);
 	}
-	spi_free(wd->wd_threads);
+	mheap_free(wd->wd_threads);
     }else{
 	wd->wd_init = 1;
 	wd->wd_thread_num = thread;
@@ -393,7 +393,7 @@ int worker_fini(){
 //	    spi_thread_destroy(&wkr->wk_thread);
 	    //FIXME:join it
 	}
-	spi_free(wd->wd_threads);
+	mheap_free(wd->wd_threads);
     }
 
     return 0;

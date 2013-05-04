@@ -21,7 +21,7 @@ struct edp_emit{
 //    struct list_head	ee_events;  // events belong to this edpu
     struct list_head	ee_node;    // link to emit master
 
-    emit_handler	ee_handler[EMIT_EVENT_TYPE_MAX];
+    emit_handler	ee_handler[kEMIT_EVENT_TYPE_MAX];
 
     void		*ee_data;   // owner's data
 };
@@ -57,19 +57,19 @@ static int emit_default_handler(emit_t em, edp_event_t *ev){
 }
 
 static void emit_event_handler(void *emit, struct edp_event *ev){
-    struct edp_emit *ee = (struct edp_emit *)edpu;
+    struct edp_emit *ee = (struct edp_emit *)emit;
     int		    errcode;
 
     ASSERT((emit != NULL) && emit_check(ee));
     ASSERT(ev != NULL);
 
-    if((ev->ev_type < 0) || (ev->ev_type >= EMIT_EVENT_TYPE_MAX)){
+    if((ev->ev_type < 0) || (ev->ev_type >= kEMIT_EVENT_TYPE_MAX)){
 	log_warn("event type overflow:%d!\n", ev->ev_type);
 	edp_event_done(ev, -ERANGE);
 	return ;
     }
 
-    if(ee->ee_handler[ev->ev_type] == emit_default_watch){
+    if(ee->ee_handler[ev->ev_type] == emit_default_handler){
 	log_warn("no handler for this event:%d!\n", ev->ev_type);
 	edp_event_done(ev, -ENOENT);
 	return ;
@@ -80,7 +80,7 @@ static void emit_event_handler(void *emit, struct edp_event *ev){
 //    spi_spin_lock(&eu->ee_lock);
 //    list_del(&ev->ev_edpu);
 //    spi_spin_unlock(&eu->ee_lock);
-    atomic_dec(&eu->ee_pendings);
+    atomic_dec(&ee->ee_pendings);
 
     edp_event_done(ev, errcode);
 }
@@ -91,12 +91,12 @@ int emit_dispatch(emit_t em, edp_event_t *ev, edp_event_cb cb, void *data){
     ASSERT(ee != NULL);
     ASSERT(ev != NULL);
 
-    if((ev->ev_type < 0) || (ev->ev_type >= emit_EVENT_TYPE_MAX)){
+    if((ev->ev_type < 0) || (ev->ev_type >= kEMIT_EVENT_TYPE_MAX)){
 	log_warn("event type overflow:%d!\n", ev->ev_type);
 	return -ERANGE;
     }
 
-    if(ee->ee_handler[ev->ev_type] == emit_default_watch){
+    if(ee->ee_handler[ev->ev_type] == emit_default_handler){
 	log_warn("no handler for this event:%d!\n", ev->ev_type);
 	return -ENOENT;
     }
@@ -114,9 +114,9 @@ int emit_dispatch(emit_t em, edp_event_t *ev, edp_event_cb cb, void *data){
 //    spi_spin_lock(&eu->ee_lock);
 //    list_add(&ev->ev_edpu, &eu->ee_events);
 //    spi_spin_unlock(&eu->ee_lock);
-    atomic_inc(&eu->ee_pendings);
+    atomic_inc(&ee->ee_pendings);
 
-    return edp_dispatch(ev);
+    return __edp_dispatch(ev);
 }
 
 int emit_add_handler(emit_t em, int type, emit_handler handler){
@@ -124,12 +124,12 @@ int emit_add_handler(emit_t em, int type, emit_handler handler){
 
     ASSERT(ee != NULL);
 
-    if((type < 0) || (type >= EMIT_EVENT_TYPE_MAX)){
+    if((type < 0) || (type >= kEMIT_EVENT_TYPE_MAX)){
 	log_warn("event type overflow:%d!\n", type);
 	return -ERANGE;
     }
 
-    eu->ee_handler[type] = handler;
+    ee->ee_handler[type] = handler;
     return 0;
 }
 
@@ -138,12 +138,12 @@ int emit_rmv_watch(emit_t em, int type){
 
     ASSERT(ee != NULL);
 
-    if((type < 0) || (type >= EMIT_EVENT_TYPE_MAX)){
+    if((type < 0) || (type >= kEMIT_EVENT_TYPE_MAX)){
 	log_warn("event type overflow:%d!\n", type);
 	return -ERANGE;
     }
 
-    eu->ee_handler[type] = emit_default_handler;
+    ee->ee_handler[type] = emit_default_handler;
     return 0;
 }
 
@@ -160,13 +160,13 @@ int emit_create(void *data, emit_t *em){
     }
     memset(ee, 0, sizeof(*ee));
 
-    ee->ee_magic = emit_INSTANCE_MAGIC;
+    ee->ee_magic = EMIT_INSTANCE_MAGIC;
     spi_spin_init(&ee->ee_lock);
     atomic_reset(&ee->ee_pendings);
 //    INIT_LIST_HEAD(&ee->ee_events);
     INIT_LIST_HEAD(&ee->ee_node);
 
-    for(i = 0; i < EMIT_EVENT_TYPE_MAX; i++){
+    for(i = 0; i < kEMIT_EVENT_TYPE_MAX; i++){
 	ee->ee_handler[i] = emit_default_handler;
     }
 

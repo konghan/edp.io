@@ -3,11 +3,12 @@ CC	= gcc
 CFLAGS	= -Wall -O3 -I../include -I. -I../src
 LDFLAGS = -pthread
 
-TARGET = edp.io
+TARGET = edpio
 
 objs = logger.o mcache.o hset.o
-objs += epoll_worker.o edp.o
-objs += edpnet.o
+objs += worker.o emitter.o edp.o
+#objs += epoll_worker.o edp.o
+#objs += edpnet.o
 objs += main.o
 
 vpath %.c ../src ../lib
