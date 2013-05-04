@@ -1,301 +1,331 @@
 /*
- * Copyright @ konghan, All rights reserved.
+ * Copyright (c) 2013, Konghan. All rights reserved.
+ * Distributed under the BSD license, see the LICENSE file.
  */
 
-#include "edap.h"
+#include "worker.h"
+#include "edp.h"
 
 #include "atomic.h"
 #include "logger.h"
 #include "slab.h"
-#include "edpu.h"
 
-#define EDAP_HIGH_NORM_RATIO	    5
+#define HIGH_NORM_RATIO	    5
 
-typedef struct edap_worker{
-    spi_thread_t	ew_thread;
-    int			ew_status;  // 0 = stop; 1 = run
+enum worker_status{
+    kWORKER_STATUS_ZERO = 0,
+    kWORKER_STATUS_INIT,
+    kWORKER_STATUS_RUNNING,
+    kWORKER_STATUS_STOP,
+};
 
-    __spi_mutex_t	ew_mutex;
+typedef struct worker{
+    spi_thread_t	wk_thread;  // thread handle
+    int			wk_status;  // enum worker_status
 
-    spi_spinlock_t	ew_criti_lock;
-    struct list_head	ew_criti_events;
-    atomic64_t		ew_criti_pending;
-    atomic64_t		ew_criti_handled;
+    __spi_mutex_t	wk_mutex;
 
-    spi_spinlock_t	ew_emerg_lock;
-    struct list_head	ew_emerg_events;
-    atomic64_t		ew_emerg_pending;
-    atomic64_t		ew_emerg_handled;
+    spi_spinlock_t	wk_crit_lock;
+    struct list_head	wk_crit_events;
+    atomic_t		wk_crit_pending;
+    atomic_t		wk_crit_handled;
 
-    spi_spinlock_t	ew_high_lock;
-    struct list_head	ew_high_events;
-    atomic64_t		ew_high_pending;
-    atomic64_t		ew_high_handled;
+    spi_spinlock_t	wk_emrg_lock;
+    struct list_head	wk_emrg_events;
+    atomic_t		wk_emrg_pending;
+    atomic_t		wk_emrg_handled;
 
-    spi_spinlock_t	ew_norm_lock;
-    struct list_head	ew_norm_events;
-    atomic64_t		ew_norm_pending;
-    atomic64_t		ew_norm_handled;
+    spi_spinlock_t	wk_high_lock;
+    struct list_head	wk_high_events;
+    atomic_t		wk_high_pending;
+    atomic_t		wk_high_handled;
 
-    spi_spinlock_t	ew_idle_lock;
-    struct list_head	ew_idle_events;
-    atomic64_t		ew_idle_pending;
-    atomic64_t		ew_idle_handled;
+    spi_spinlock_t	wk_norm_lock;
+    struct list_head	wk_norm_events;
+    atomic_t		wk_norm_pending;
+    atomic_t		wk_norm_handled;
 
-    struct list_head	ew_events;
-    atomic64_t		ew_event_pending;
+    spi_spinlock_t	wk_idle_lock;
+    struct list_head	wk_idle_events;
+    atomic_t		wk_idle_pending;
+    atomic_t		wk_idle_handled;
 
-}edap_worker_t;
+    struct list_head	wk_events;
+    atomic_t		wk_event_pending;
 
-typedef struct edap_data{
-    int			ed_init;
-    int			ed_thread_num;
-    int			ed_round;
-    edap_worker_t	*ed_threads;
-}edap_data_t;
+}worker_t;
 
-static edap_data_t  __edap_data = {};
+typedef struct worker_data{
+    int			wd_init;
+    int			wd_thread_num;
+    int			wd_round;
+    worker_t		*wd_threads;
+}worker_data_t;
 
-static void edap_do_event(edap_event_t *ev){
+static worker_data_t  __worker_data = {};
+
+static inline worker_data_t *get_data(){
+    return &__worker_data;
+}
+
+static inline void worker_do_event(edp_event_t *ev){
     ASSERT((ev != NULL) && (ev->ev_handler != NULL));
 
     ev->ev_handler(ev->ev_edpu, ev);
 }
 
-static int edap_worker_init(edap_worker_t *ew){
-    ASSERT(ew != NULL);
+static int worker_init(worker_t *wkr){
+    ASSERT(wkr != NULL);
 
-    __spi_mutex_init(&ew->ew_mutex);
+    __spi_mutex_init(&wkr->wk_mutex);
 
-    spi_spin_init(&ew->ew_criti_lock);
-    INIT_LIST_HEAD(&ew->ew_criti_events);
+    spi_spin_init(&wkr->wk_crit_lock);
+    INIT_LIST_HEAD(&wkr->wk_crit_events);
 
-    spi_spin_init(&ew->ew_emerg_lock);
-    INIT_LIST_HEAD(&ew->ew_emerg_events);
+    spi_spin_init(&wkr->wk_emrg_lock);
+    INIT_LIST_HEAD(&wkr->wk_emrg_events);
 
-    spi_spin_init(&ew->ew_high_lock);
-    INIT_LIST_HEAD(&ew->ew_high_events);
+    spi_spin_init(&wkr->wk_high_lock);
+    INIT_LIST_HEAD(&wkr->wk_high_events);
 
-    spi_spin_init(&ew->ew_norm_lock);
-    INIT_LIST_HEAD(&ew->ew_norm_events);
+    spi_spin_init(&wkr->wk_norm_lock);
+    INIT_LIST_HEAD(&wkr->wk_norm_events);
 
-    spi_spin_init(&ew->ew_idle_lock);
-    INIT_LIST_HEAD(&ew->ew_idle_events);
+    spi_spin_init(&wkr->wk_idle_lock);
+    INIT_LIST_HEAD(&wkr->wk_idle_events);
 
-    ew->ew_status = 1; // running
+    wkr->wk_status = kWORKER_STATUS_INIT;
     
     return 0;
 }
 
-static int edap_worker_fini(edap_worker_t *ew){
-    ASSERT(ew!= NULL);
+static int worker_fini(worker_worker_t *wkr){
+    ASSERT(wkr!= NULL);
 
-    if(!ew->ew_status){
+    if(wkr->wk_status != kWORKER_STATUS_STOP){
 	return -1;
     }
 
-    spi_spin_fini(&ew->ew_idle_lock);
+    spi_spin_fini(&wkr->wk_idle_lock);
 
-    spi_spin_fini(&ew->ew_norm_lock);
+    spi_spin_fini(&wkr->wk_norm_lock);
 
-    spi_spin_fini(&ew->ew_high_lock);
+    spi_spin_fini(&wkr->wk_high_lock);
 
-    spi_spin_fini(&ew->ew_emerg_lock);
+    spi_spin_fini(&wkr->wk_emrg_lock);
 
-    spi_spin_fini(&ew->ew_criti_lock);
+    spi_spin_fini(&wkr->wk_crit_lock);
 
-    __spi_mutex_fini(&ew->ew_mutex);
+    __spi_mutex_fini(&wkr->wk_mutex);
 
-    ew->ew_status = 0;
+    wkr->wk_status = kWORKER_STATUS_ZERO;
 
     return 0;
 }
 
-static void *edap_worker_routine(void *data){
-    edap_worker_t	*ew = (edap_worker_t *)data;
-    edap_event_t	*evt;
+static void *worker_routine(void *data){
+    worker_t		*wkr = (worker_t *)data;
+    edp_event_t		*evt;
     struct list_head	events;
     struct list_head	*pos, *tmp;
-    int			ratio = 0;
+    int			ratio = 0, high = 0;
+
+    ASSERT(wkr != NULL);
 
     INIT_LIST_HEAD(&events);
+    worker_worker_init(wkr);
 
-    edap_worker_init(ew);
+    wkr->wk_status = kWORKER_STATUS_RUNNING;
 
-    while(ew->ew_status){
+    while(wkr->wk_status != kWORKER_STATUS_STOP){
 	
-	__spi_mutex_lock(&ew->ew_mutex);
+	__spi_mutex_lock(&wkr->wk_mutex);
 
 criti_event:
-	spi_spin_lock(&ew->ew_criti_lock);
-	if(!list_empty(&ew->ew_criti_events)){
-	    list_move(&ew->ew_criti_events, &events);
+	spi_spin_lock(&wkr->wk_crit_lock);
+	if(!list_empty(&wkr->wk_crit_events)){
+	    list_move(&wkr->wk_crit_events, &events);
 	}
-	atomic64_reset(&ew->ew_criti_pending);
-	spi_spin_unlock(&ew->ew_criti_lock);
+	atomic_reset(&wkr->wk_crit_pending);
+	spi_spin_unlock(&wkr->wk_crit_lock);
 
 	list_for_each_safe(pos, tmp, &events){
-	    evt = list_entry(pos, edap_event_t, ev_node);
+	    evt = list_entry(pos, struct edp_event, ev_node);
+	    if(evt->ev_type != kEDP_EVENT_PRIORITY_CRIT)
+		break;
 	    list_del(pos);
-	    edap_do_event(evt);
-	    atomic64_inc(&ew->ew_criti_handled);
+	    worker_do_event(evt);
+	    atomic_inc(&wkr->wk_crit_handled);
 	}
 
 emerg_event:
-	spi_spin_lock(&ew->ew_emerg_lock);
-	if(!list_empty(&ew->ew_emerg_events)){
-	    list_move(&ew->ew_emerg_events, &events);
+	spi_spin_lock(&wkr->wk_emrg_lock);
+	if(!list_empty(&wkr->wk_emrg_events)){
+	    list_move(&wkr->wk_emrg_events, &events);
 	}
-	atomic64_reset(&ew->ew_emerg_pending);
-	spi_spin_unlock(&ew->ew_emerg_lock);
+	atomic_reset(&wkr->wk_emrg_pending);
+	spi_spin_unlock(&wkr->wk_emrg_lock);
 
 	list_for_each_safe(pos, tmp, &events){
-	    evt = list_entry(pos, struct edap_event, ev_node);
+	    evt = list_entry(pos, struct edp_event, ev_node);
+	    if(evt->ev_type != kEDP_EVENT_PRIORITY_EMRG)
+		break;
 	    list_del(pos);
-	    edap_do_event(evt);
-	    atomic64_inc(&ew->ew_emerg_handled);
+	    worker_do_event(evt);
+	    atomic_inc(&wkr->wk_emrg_handled);
 
-	    if(ew->ew_criti_pending)
+	    if(wkr->wk_crit_pending)
 		goto criti_event;
 	}
 	
 high_event:
-	spi_spin_lock(&ew->ew_high_lock);
-	if(!list_empty(&ew->ew_high_events)){
-	    list_move(&ew->ew_high_events, &events);
+	spi_spin_lock(&wkr->wk_high_lock);
+	if(!list_empty(&wkr->wk_high_events)){
+	    list_move(&wkr->wk_high_events, &events);
 	}
-	ratio = atomic64_reset(&ew->ew_high_pending);
-	spi_spin_unlock(&ew->ew_high_lock);
+	ratio = atomic_reset(&wkr->wk_high_pending);
+	spi_spin_unlock(&wkr->wk_high_lock);
+
+	// tell norm part: ratio is useful
+	high = (ratio != 0) ? 1 : 0;
 
 	list_for_each_safe(pos, tmp, &events){
-	    evt = list_entry(pos, edap_event_t, ev_node);
+	    evt = list_entry(pos, struct edp_event, ev_node);
+	    if(evt->ev_type != kEDP_EVENT_PRIORITY_HIGH)
+		break;
 	    list_del(pos);
-	    edap_do_event(evt);
-	    atomic64_inc(&ew->ew_high_handled);
+	    worker_do_event(evt);
+	    atomic_inc(&wkr->wk_high_handled);
 
-	    if(ew->ew_criti_pending)
+	    if(wkr->wk_crit_pending)
 		goto criti_event;
-	    if(ew->ew_emerg_pending)
+	    if(wkr->wk_emrg_pending)
 		goto emerg_event;
 	}
 	
 norm_event:
-	spi_spin_lock(&ew->ew_norm_lock);
-	if(!list_empty(&ew->ew_norm_events)){
-	    list_move(&ew->ew_norm_events, &events);
+	spi_spin_lock(&wkr->wk_norm_lock);
+	if(!list_empty(&wkr->wk_norm_events)){
+	    list_move_tail(&wkr->wk_norm_events, &events);
 	}
-	atomic64_reset(&ew->ew_norm_pending);
-	spi_spin_unlock(&ew->ew_norm_lock);
-
-	ratio /= EDAP_HIGH_NORM_RATIO;
+	atomic_reset(&wkr->wk_norm_pending);
+	spi_spin_unlock(&wkr->wk_norm_lock);
+	
+	ratio /= HIGH_NORM_RATIO;
 	list_for_each_safe(pos, tmp, &events){
-	    evt = list_entry(pos, edap_event_t, ev_node);
+	    evt = list_entry(pos, struct edp_event, ev_node);
 	    list_del(pos);
-	    edap_do_event(evt);
-	    atomic64_inc(&ew->ew_norm_handled);
+	    worker_do_event(evt);
+	    atomic_inc(&wkr->wk_norm_handled);
 
-	    if(ew->ew_criti_pending)
+	    if(wkr->wk_crit_pending)
 		goto criti_event;
-	    if(ew->ew_emerg_pending)
+	    if(wkr->wk_emrg_pending)
 		goto emerg_event;
 
-	    if((ratio == 0) && (ew->ew_high_pending)){
-		goto high_event;
+	    if(wkr->wk_high_pending){
+		if(high == 0){
+		    goto high_event;
+		}else if(ratio == 0){
+		    goto high_event;
+		}
 	    }
 	    ratio--;
 	}
 	
 idle_event:
-	spi_spin_lock(&ew->ew_idle_lock);
-	if(!list_empty(&ew->ew_idle_events)){
-	    list_move_tail(&ew->ew_idle_events, &events);
+	spi_spin_lock(&wkr->wk_idle_lock);
+	if(!list_empty(&wkr->wk_idle_events)){
+	    list_move_tail(&wkr->wk_idle_events, &events);
 	}
-	atomic64_reset(&ew->ew_idle_pending);
-	spi_spin_unlock(&ew->ew_idle_lock);
+	atomic_reset(&wkr->wk_idle_pending);
+	spi_spin_unlock(&wkr->wk_idle_lock);
 
 	list_for_each_safe(pos, tmp, &events){
-	    evt = list_entry(pos, edap_event_t, ev_node);
+	    evt = list_entry(pos, struct edp_event, ev_node);
 	    list_del(pos);
-	    edap_do_event(evt);
-	    atomic64_inc(&ew->ew_idle_handled);
+	    worker_do_event(evt);
+	    atomic_inc(&wkr->wk_idle_handled);
 
-	    if(ew->ew_criti_pending)
+	    if(wkr->wk_crit_pending)
 		goto criti_event;
-	    if(ew->ew_emerg_pending)
+	    if(wkr->wk_emrg_pending)
 		goto emerg_event;
-	    if(ew->ew_high_pending)
+	    if(wkr->wk_high_pending)
 		goto high_event;
-	    if(ew->ew_norm_pending)
+	    if(wkr->wk_norm_pending)
 		goto norm_event;
 	}
     }
 
-    if(ew->ew_criti_pending)
+    ASSERT(wkr->wk_status == kWORKER_STATUS_STOP);
+
+    if(wkr->wk_crit_pending)
 	goto criti_event;
-    if(ew->ew_emerg_pending)
+    if(wkr->wk_emrg_pending)
 	goto emerg_event;
-    if(ew->ew_high_pending)
+    if(wkr->wk_high_pending)
 	goto high_event;
-    if(ew->ew_norm_pending)
+    if(wkr->wk_norm_pending)
 	goto norm_event;
-    if(ew->ew_idle_pending)
+    if(wkr->wk_idle_pending)
 	goto idle_event;
 
-    edap_worker_fini(ew);
+    worker_worker_fini(wkr);
 
     return NULL;
 }
 
-int edap_dispatch(edap_event_t *ev){
-    edap_data_t		*ed = &__edap_data;
-    edap_worker_t	*ew;
+int edp_dispatch(edp_event_t *ev){
+    worker_data_t	*wd = get_data();
+    worker_t		*wkr;
     spi_spinlock_t	*lock;
     struct list_head	*lh;
-    atomic64_t		*pendings;
+    atomic_t		*pendings;
     int			cpuid;
 
     ASSERT(ev != NULL);
 
-    //FIXME:should base on cpu load
-    if((ev->ev_cpuid >= 0) && (ev->ev_cpuid < ed->ed_round)){
+    // FIXME:should base on cpu load
+    if((ev->ev_cpuid >= 0) && (ev->ev_cpuid < wd->wd_round)){
 	cpuid = ev->ev_cpuid;
     }else{
-	cpuid = ed->ed_round;
+	cpuid = wd->wd_round;
 	ev->ev_cpuid = cpuid;
-	ed->ed_round++;
-	ed->ed_round = ed->ed_round % ed->ed_thread_num;
+	wd->wd_round++;
+	wd->wd_round = wd->wd_round % wd->wd_thread_num;
     }
 
-    ew = &(ed->ed_threads[cpuid]);
+    wkr = &(wd->wd_threads[cpuid]);
     switch(ev->ev_priority){
-	case EDAP_EVENT_PRIORITY_CRITI:
-	    lock = &ew->ew_criti_lock;
-	    lh   = &ew->ew_criti_events;
-	    pendings = &ew->ew_criti_pending;
+	case kEDP_EVENT_PRIORITY_CRIT:
+	    lock = &wkr->wk_crit_lock;
+	    lh   = &wkr->wk_crit_events;
+	    pendings = &wkr->wk_crit_pending;
 	    break;
 
-	case EDAP_EVENT_PRIORITY_EMERG:
-	    lock = &ew->ew_emerg_lock;
-	    lh   = &ew->ew_emerg_events;
-	    pendings = &ew->ew_emerg_pending;
+	case kEDP_EVENT_PRIORITY_EMERG:
+	    lock = &wkr->wk_emrg_lock;
+	    lh   = &wkr->wk_emrg_events;
+	    pendings = &wkr->wk_emrg_pending;
 	    break;
 
-	case EDAP_EVENT_PRIORITY_HIGH:
-	    lock = &ew->ew_high_lock;
-	    lh   = &ew->ew_high_events;
-	    pendings = &ew->ew_high_pending;
+	case kEDP_EVENT_PRIORITY_HIGH:
+	    lock = &wkr->wk_high_lock;
+	    lh   = &wkr->wk_high_events;
+	    pendings = &wkr->wk_high_pending;
 	    break;
 
-	case EDAP_EVENT_PRIORITY_NORM:
-	    lock = &ew->ew_norm_lock;
-	    lh   = &ew->ew_norm_events;
-	    pendings = &ew->ew_norm_pending;
+	case kEDP_EVENT_PRIORITY_NORM:
+	    lock = &wkr->wk_norm_lock;
+	    lh   = &wkr->wk_norm_events;
+	    pendings = &wkr->wk_norm_pending;
 	    break;
 
-	case EDAP_EVENT_PRIORITY_IDLE:
-	    lock = &ew->ew_idle_lock;
-	    lh   = &ew->ew_idle_events;
-	    pendings = &ew->ew_idle_pending;
+	case kEDP_EVENT_PRIORITY_IDLE:
+	    lock = &wkr->wk_idle_lock;
+	    lh   = &wkr->wk_idle_events;
+	    pendings = &wkr->wk_idle_pending;
 	    break;
 
 	default:
@@ -305,35 +335,32 @@ int edap_dispatch(edap_event_t *ev){
 
     spi_spin_lock(lock);
     list_add(&ev->ev_node, lh);
-    atomic64_inc(pendings);
+    atomic_inc(pendings);
     spi_spin_unlock(lock);
 
-    __spi_mutex_unlock(&ew->ew_mutex);
+    __spi_mutex_unlock(&wkr->wk_mutex);
 
     return 0;
 }
 
-int edap_init(int thread){
-    edap_data_t	    *ed = &__edap_data;
-    edap_worker_t   *et;
+int worker_init(int thread){
+    worker_data_t   *wd = get_data();
+    worker_t	    *wkr;
     int		    i, ret = -1;
 
-    logger_init();
-    slab_init();
-
-    if(ed->ed_init){
+    if(wd->wd_init){
 	return -1;
     }
 
-    ed->ed_threads = (edap_worker_t *)spi_malloc(sizeof(edap_worker_t) * thread);
-    if(ed->ed_threads == NULL){
+    wd->wd_threads = (worker_t *)mheap_alloc(sizeof(*wkr) * thread);
+    if(wd->wd_threads == NULL){
 	return -ENOMEM;
     }
-    memset(ed->ed_threads, 0, sizeof(edap_worker_t) * thread);
+    memset(wd->wd_threads, 0, sizeof(*wkr) * thread);
 
     for(i = 0; i < thread; i++){
-	et = &(ed->ed_threads[i]);
-        ret = spi_thread_create(&et->ew_thread, edap_worker_routine, et);
+	wkr = &(wd->wd_threads[i]);
+        ret = spi_thread_create(&wkr->wk_thread, worker_routine, wkr);
 	if(ret != 0){
 	    break;
 	}
@@ -341,40 +368,33 @@ int edap_init(int thread){
 
     if(i != thread){
 	for(; i>= 0; i--){
-	    et = &(ed->ed_threads[i]);
-	    spi_thread_destroy(et->ew_thread);
+	    wkr = &(wd->wd_threads[i]);
+	    spi_thread_destroy(wkr->wk_thread);
 	}
-	spi_free(ed->ed_threads);
+	spi_free(wd->wd_threads);
     }else{
-	ed->ed_init = 1;
-	ed->ed_thread_num = thread;
+	wd->wd_init = 1;
+	wd->wd_thread_num = thread;
     }
-
-    edpu_init();
 
     return ret;
 }
 
-int edap_fini(){
-    edap_data_t	    *ed = &__edap_data;
-    edap_worker_t   *et;
+int worker_fini(){
+    worker_data_t   *wd = get_data();
+    worker_t	    *wkr;
     int		    i;
 
-    edpu_fini();
-
-    if(ed->ed_init){
-	ed->ed_init = 0;
-	for(i = ed->ed_thread_num; i >= 0; i--){
-	    et = &(ed->ed_threads[i]);
-	    et->ew_status = 0; // let it stop
-//	    spi_thread_destroy(&et->ew_thread);
+    if(wd->wd_init){
+	wd->wd_init = 0;
+	for(i = wd->wd_thread_num; i >= 0; i--){
+	    wkr = &(wd->wd_threads[i]);
+	    wkr->wk_status = kWORKER_STATUS_STOP; // let it stop
+//	    spi_thread_destroy(&wkr->wk_thread);
 	    //FIXME:join it
 	}
-	spi_free(ed->ed_threads);
+	spi_free(wd->wd_threads);
     }
-
-    slab_fini();
-    logger_fini();
 
     return 0;
 }
