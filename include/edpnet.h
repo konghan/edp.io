@@ -1,29 +1,6 @@
 /*
- * copyright (c) 2013, Konghan. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met: 
- * 1. Redistributions of source code must retain the above copyright notice, 
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution. 
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR 
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR 
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied.
+ * Copyright (c) 2013, Konghan. All rights reserved.
+ * Distributed under the BSD license, see the LICENSE file.
  */
 
 #ifndef __EDPNET_H__
@@ -84,19 +61,16 @@ typedef struct edpnet_sock_cbs{
     void (*sock_close)(edpnet_sock_t sock, void *data);
 }edpnet_sock_cbs_t;
 
-typedef void (*edpnet_rwcb)(edpnet_sock_t sock, edpnet_ioctx_t *ioctx, int errcode);
-
 enum edpnet_iocontext_type{
     kEDPNET_IOCTX_TYPE_IOVEC = 0,
     kEDPNET_IOCTX_TYPE_IODATA,
 };
 
-struct sglist{
-    uint32_t	sgl_size;
-    void	*sgl_data;
-};
 
-typedef struct edpnet_iocontext{
+struct edpnet_ioctx;
+typedef void (*edpnet_rwcb)(edpnet_sock_t sock, struct edpnet_ioctx *ioctx, int errcode);
+
+typedef struct edpnet_ioctx{
     struct list_head	ec_node;    // link to owner
     uint32_t		ec_type;    // IOVEC or IODATA
     edpnet_rwcb		ec_iocb;
@@ -106,7 +80,7 @@ typedef struct edpnet_iocontext{
     union{
 	struct{
 	    uint32_t	    ec_ionr;
-	    struct  sglist  *ec_iov;
+	    struct iovec    *ec_iov;
 	};
 	struct{
 	    uint32_t	ec_size;
@@ -115,7 +89,6 @@ typedef struct edpnet_iocontext{
     };
 
 }edpnet_ioctx_t;
-
 
 int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data);
 int edpnet_sock_destroy(edpnet_sock_t sock);
@@ -126,7 +99,7 @@ int edpnet_sock_connect(edpnet_sock_t sock, edpnet_addr_t *addr);
 int edpnet_sock_close(edpnet_sock_t sock);
 
 int edpnet_sock_write(edpnet_sock_t sock, edpnet_ioctx_t *ioctx, edpnet_rwcb cb);
-int edpnet_sock_read(edpnet_sock_t sock, edpnet_ioctx_t *ioctx, edpnet_rwcb cb);
+int edpnet_sock_read(edpnet_sock_t sock, edpnet_ioctx_t *ioctx);
 
 // serv 
 struct edpnet_serv;

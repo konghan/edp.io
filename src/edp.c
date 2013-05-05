@@ -49,8 +49,6 @@ int edp_init(int thread_num){
     }
     log_info("emit have been initialized!\n");
 
-    log_info("edp.io have initialized\n");
-
     return 0;
 
 exit_emit:
@@ -71,7 +69,7 @@ exit_mcache:
 int edp_loop(){
 
     while(1){
-	sleep(1);
+	__spi_sleep(10);
     }
 
     return 0;

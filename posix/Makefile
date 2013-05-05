@@ -7,8 +7,8 @@ TARGET = edpio
 
 objs = logger.o mcache.o hset.o
 objs += worker.o emitter.o edp.o
-#objs += epoll_worker.o edp.o
-#objs += edpnet.o
+objs += eio-epoll.o
+objs += edpnet.o
 objs += main.o
 
 vpath %.c ../src ../lib

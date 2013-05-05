@@ -1,5 +1,6 @@
 /*
- * Copyright @ konghan, All rights reserved.
+ * Copyright (c) 2013, Konghan. All rights reserved.
+ * Distributed under the BSD license, see the LICENSE file.
  */
 
 #ifndef __EDBLK_H__

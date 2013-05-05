@@ -1,38 +1,30 @@
 /*
- * copyright (c) 2013, Konghan. All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met: 
- * 1. Redistributions of source code must retain the above copyright notice, 
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution. 
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR 
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR 
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS;
- * OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
- * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR
- * OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
- * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * The views and conclusions contained in the software and documentation are
- * those of the authors and should not be interpreted as representing official
- * policies, either expressed or implied.
+ * Copyright (c) 2013, Konghan. All rights reserved.
+ * Distributed under the BSD license, see the LICENSE file.
  */
 
 #include "edpnet.h"
+#include "eio.h"
+
+#include "mcache.h"
+#include "logger.h"
+#include "list.h"
+#include "atomic.h"
+
+#include <fcntl.h>
+#include <sys/epoll.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <netinet/in.h>
 
 #define kEDPNET_SOCK_STATUS_ZERO	0x0000
 #define kEDPNET_SOCK_STATUS_INIT	0x0001
 #define kEDPNET_SOCK_STATUS_CONNECT	0x0002
 #define kEDPNET_SOCK_STATUS_WRITE	0x0100
 #define kEDPNET_SOCK_STATUS_READ	0x0200
+
+#define kEDPNET_SERV_PENDCLIENTS	64
 
 typedef struct edpnet_data{
     int			ed_init;
@@ -70,7 +62,8 @@ struct edpnet_sock{
     atomic_t		es_pendios;
     struct list_head	es_iowrites; // pending write ios
 
-    edpnet_sock_cbs_t	es_cbs;
+    edpnet_sock_cbs_t	*es_cbs;
+    void		*es_data;
 };
 
 static int sock_write(int sock, edpnet_ioctx_t *io){
@@ -124,7 +117,7 @@ static void sock_worker_cb(uint32_t events, void *data){
 	    spi_spin_unlock(&s->es_lock);
 
 	    if(ready)
-		s->es_cbs.data_ready(s, 0);
+		s->es_cbs->data_ready(s, s->es_data);
 	}else{
 	    spi_spin_lock(&s->es_lock);
 	    s->es_status |= kEDPNET_SOCK_STATUS_CONNECT;
@@ -175,12 +168,12 @@ static void sock_worker_cb(uint32_t events, void *data){
 	    ioc = list_entry(lhc, edpnet_ioctx_t, ec_node);
 	    ioc->ec_iocb(s, ioc, 0);
 	}else{
-	    s->es_cbs.data_drain(s);
+	    s->es_cbs->data_drain(s, s->es_data);
 	}
     }
 
     if(events & EPOLLERR){
-	s->es_cbs.sock_error(s, -1);
+	s->es_cbs->sock_error(s, s->es_data);
 	//FIXME: clear pending writes
    }
     
@@ -189,7 +182,7 @@ static void sock_worker_cb(uint32_t events, void *data){
 	s->es_status &= ~kEDPNET_SOCK_STATUS_CONNECT;
 	spi_spin_unlock(&s->es_lock);
 
-	s->es_cbs.sock_close(s, -1);
+	s->es_cbs->sock_close(s, s->es_data);
 
 	//FIXME: clear pending writes
     }
@@ -204,13 +197,12 @@ static int sock_init(edpnet_sock_t sock){
     }
 
     INIT_LIST_HEAD(&s->es_node);
-    INIT_LIST_HEAD(&s->es_ioreads);
     INIT_LIST_HEAD(&s->es_iowrites);
 
     spi_spin_init(&s->es_lock);
     s->es_status |= kEDPNET_SOCK_STATUS_INIT;
 
-    if(watch_add(s->es_sock, sock_worker_cb, s) != 0){
+    if(eio_addfd(s->es_sock, sock_worker_cb, s) != 0){
 	log_warn("watch sock handle fail!\n");
 	close(s->es_sock);
 	return -1;
@@ -219,23 +211,23 @@ static int sock_init(edpnet_sock_t sock){
     return 0;
 }
 
-static int sock_fini(edpnet_data_t *ed, edpnet_sock_t sock){
+static int sock_fini(edpnet_sock_t sock){
     struct edpnet_sock	*s = sock;
 
     if(s->es_status != 0){
-	log_warn("fini sock in wrong status!\n"):
+	log_warn("fini sock in wrong status!\n");
 	return -1;
     }
 
-    watch_del(s->es_sock);
+    eio_delfd(s->es_sock);
 
-    ASSERT(list_empty(&s->es_ios));
+    ASSERT(list_empty(&s->es_iowrites));
     spi_spin_fini(&s->es_lock);
 
     return 0;
 }
 
-int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs){
+int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data){
     edpnet_data_t	*ed = &__edpnet_data;
     struct edpnet_sock	*s;
     int			ret;
@@ -250,9 +242,9 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs){
 	log_warn("no enough memory!\n");
 	return -ENOMEM;
     }
-    memset(s, sizeof(*s));
+    memset(s, 0, sizeof(*s));
     
-    s->es_sock = socked(PF_INET, SOCK_STREAM, 0);
+    s->es_sock = socket(PF_INET, SOCK_STREAM, 0);
     if(s->es_sock < 0){
 	log_warn("init sock failure!\n");
 	mheap_free(s);
@@ -266,7 +258,8 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs){
 	return ret;
     }
 
-    s->es_cbs = cbs;
+    s->es_cbs	= cbs;
+    s->es_data	= data;
     *sock = s;
 
     return 0;
@@ -275,7 +268,6 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs){
 int edpnet_sock_destroy(edpnet_sock_t sock){
     edpnet_data_t	*ed = &__edpnet_data;
     struct edpnet_sock	*s = sock;
-    int			ret;
 
     if(!ed->ed_init){
 	log_warn("ednet not inited!\n");
@@ -283,10 +275,24 @@ int edpnet_sock_destroy(edpnet_sock_t sock){
     }
 
     s->es_status = kEDPNET_SOCK_STATUS_ZERO;
-    sock_fini(ed, sock);
+    sock_fini(sock);
     close(s->es_sock);
 
     mheap_free(s);
+
+    return 0;
+}
+
+int edpnet_sock_set(edpnet_sock_t sock, edpnet_sock_cbs_t *cbs, void *data){
+    struct edpnet_sock *s = sock;
+
+    ASSERT(s != NULL);
+
+    if(cbs != NULL)
+	s->es_cbs = cbs;
+
+    if(data != NULL)
+	s->es_data = data;
 
     return 0;
 }
@@ -298,8 +304,15 @@ int edpnet_sock_connect(edpnet_sock_t sock, edpnet_addr_t *addr){
 
     memset(&sa, 0, sizeof(sa));
     sa.sin_family	= AF_INET;
-    sa.sin_port		= htons(addr->ea_port);
-    sa.sin_addr.s_addr	= addr->ea_ip;
+    if(addr->ea_type == kEDPNET_ADDR_TYPE_IPV4){
+	sa.sin_port		= htons(addr->ea_v4.eia_port);
+	sa.sin_addr.s_addr	= addr->ea_v4.eia_ip;
+    }else if(addr->ea_type == kEDPNET_ADDR_TYPE_IPV6){
+	//FIXME: IPv6 support
+    }else{
+	log_warn("IP address type is unkonw:%d\n", addr->ea_type);
+	return -1;
+    }
 
     ret = connect(s->es_sock, (struct sockaddr *)&sa, sizeof(sa));
     if(ret < 0){
@@ -370,11 +383,11 @@ int edpnet_sock_read(edpnet_sock_t sock, edpnet_ioctx_t *io){
 
     if(ready){
         switch(io->ec_type){
-	case kedpnet_IOCTX_TYPE_IOVEC:
+	case kEDPNET_IOCTX_TYPE_IOVEC:
 	    ret = readv(s->es_sock, io->ec_iov, io->ec_ionr);
 	    break;
 
-	case kedpnet_IOCTX_TYPE_IODATA:
+	case kEDPNET_IOCTX_TYPE_IODATA:
 	    ret = read(s->es_sock, io->ec_data, io->ec_size);
 	    break;
 
@@ -418,7 +431,7 @@ struct edpnet_serv{
     spi_spinlock_t	es_lock;
     struct list_head	es_socks;	// connected clients
 
-    edpnet_serv_cbs_t	es_cbs;
+    edpnet_serv_cbs_t	*es_cbs;
     void		*es_data;
 };
 
@@ -446,7 +459,7 @@ static void serv_worker_cb(uint32_t events, void *data){
 	    sock_fini(sock);
 	    mheap_free(sock);
 	}else{
-	    s->es_cbs.connected(s, sock, s->es_data);
+	    s->es_cbs->connected(s, sock, s->es_data);
 	}
     }
 
@@ -455,7 +468,7 @@ static void serv_worker_cb(uint32_t events, void *data){
     }
 
     if(events & (EPOLLERR | EPOLLHUP)){
-	s->es_cbs.close(s, s->es_data);
+	s->es_cbs->close(s, s->es_data);
     }
 }
 
@@ -476,7 +489,7 @@ int edpnet_serv_create(edpnet_serv_t *serv, edpnet_serv_cbs_t *cbs, void *data){
     s->es_cbs = cbs;
     s->es_data = data;
 
-    s->es_sock = socked(PF_INET, SOCK_STREAM, 0);
+    s->es_sock = socket(PF_INET, SOCK_STREAM, 0);
     if(s->es_sock < 0){
 	log_warn("init sock failure!\n");
 	mheap_free(s);
@@ -491,7 +504,7 @@ int edpnet_serv_create(edpnet_serv_t *serv, edpnet_serv_cbs_t *cbs, void *data){
 
     spi_spin_init(&s->es_lock);
 
-    if(watch_add(s->es_sock, serv_worker_cb, s) != 0){
+    if(eio_addfd(s->es_sock, serv_worker_cb, s) != 0){
 	log_warn("watch serv handle fail!\n");
 	spi_spin_fini(&s->es_lock);
 	close(s->es_sock);
@@ -511,7 +524,7 @@ int edpnet_serv_destroy(edpnet_serv_t serv){
 
     ASSERT(s != NULL);
 
-    watch_del(s->es_sock);
+    eio_delfd(s->es_sock);
 
     spi_spin_lock(&s->es_lock);
     s->es_status = kEDPNET_SERV_STATUS_ZERO;
@@ -533,15 +546,24 @@ int edpnet_serv_listen(edpnet_serv_t serv, edpnet_addr_t *addr){
 
     memset(&sa, 0, sizeof(sa));
     sa.sin_family	= AF_INET;
-    sa.sin_port		= htons(addr->ea_port);
-    sa.sin_addr.s_addr	= addr->ea_ip;
 
-    ret = bind(s->es_sock, &sa, sizeof(sa));
+    if(addr->ea_type == kEDPNET_ADDR_TYPE_IPV4){
+        sa.sin_port		= htons(addr->ea_v4.eia_port);
+	sa.sin_addr.s_addr	= addr->ea_v4.eia_ip;
+    }else if(addr->ea_type == kEDPNET_ADDR_TYPE_IPV6){
+	//FIXME: IPv6 support
+	ASSERT(0);
+    }else{
+	log_warn("IP address type unkonw:%d\n", addr->ea_type);
+	return -1;
+    }
+
+    ret = bind(s->es_sock, (struct sockaddr*)&sa, sizeof(sa));
     if(ret < 0){
 	return ret;
     }
 
-    ret = listen(s->es_sock, EDPNET_SERV_PENDCLIENT);
+    ret = listen(s->es_sock, kEDPNET_SERV_PENDCLIENTS);
     if(ret == 0){
 	spi_spin_lock(&s->es_lock);
 	s->es_status |= kEDPNET_SERV_STATUS_LISTEN;
