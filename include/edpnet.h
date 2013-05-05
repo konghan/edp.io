@@ -14,6 +14,9 @@
 extern "C" {
 #endif
 
+/*
+ * edpnet address structs & interface
+ */
 struct edpnet_ipv4_addr{
     uint32_t	eia_ip;
     short	eia_port;
@@ -23,7 +26,7 @@ struct edpnet_ipv6_addr{
 };
 
 enum edpnet_addr_type{
-    kEDPNET_ADDR_TYPE_IPV4 = 0,
+    kEDPNET_ADDR_TYPE_IPV4 = 1234,
     kEDPNET_ADDR_TYPE_IPV6,
 };
 
@@ -35,6 +38,14 @@ typedef struct edpnet_addr{
     };
 }edpnet_addr_t;
 
+// convert ipv4 or ipv6 address from text form to binary form
+int edpnet_pton(int type, const char *src, void *dst);
+// convert ipv4 or ipv6 address form binary form to text form
+const char *edpnet_ntop(int type, const void *src, char *dst, int len);
+
+/*
+ * edpnet sock structs & interface
+ */
 struct edpnet_sock;
 typedef struct edpnet_sock *edpnet_sock_t;
 
@@ -62,7 +73,7 @@ typedef struct edpnet_sock_cbs{
 }edpnet_sock_cbs_t;
 
 enum edpnet_iocontext_type{
-    kEDPNET_IOCTX_TYPE_IOVEC = 0,
+    kEDPNET_IOCTX_TYPE_IOVEC = 1111,
     kEDPNET_IOCTX_TYPE_IODATA,
 };
 
@@ -101,7 +112,9 @@ int edpnet_sock_close(edpnet_sock_t sock);
 int edpnet_sock_write(edpnet_sock_t sock, edpnet_ioctx_t *ioctx, edpnet_rwcb cb);
 int edpnet_sock_read(edpnet_sock_t sock, edpnet_ioctx_t *ioctx);
 
-// serv 
+/*
+ * serv - structs & interfaces
+ */
 struct edpnet_serv;
 typedef struct edpnet_serv *edpnet_serv_t;
 
@@ -124,6 +137,9 @@ int edpnet_serv_destroy(edpnet_serv_t serv);
 int edpnet_serv_listen(edpnet_serv_t serv, edpnet_addr_t *addr);
 int edpnet_serv_close(edpnet_serv_t serv);
 
+/*
+ * edpnet interfaces
+ */
 int edpnet_init();
 int edpnet_fini();
 

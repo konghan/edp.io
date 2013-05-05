@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define kEDPNET_SOCK_STATUS_ZERO	0x0000
 #define kEDPNET_SOCK_STATUS_INIT	0x0001
@@ -25,6 +26,10 @@
 #define kEDPNET_SOCK_STATUS_READ	0x0200
 
 #define kEDPNET_SERV_PENDCLIENTS	64
+
+/*
+ * edpnet - common part implementation
+ */
 
 typedef struct edpnet_data{
     int			ed_init;
@@ -48,6 +53,37 @@ static int set_nonblock(int sock){
 
     return -1;
 }
+
+// convert ipv4 or ipv6 address from text form to binary form
+int edpnet_pton(int type, const char *src, void *dst){
+    int	 af;
+
+    if(type == kEDPNET_ADDR_TYPE_IPV4){
+	af = AF_INET;
+    }else if(type == kEDPNET_ADDR_TYPE_IPV6){
+	af = AF_INET6;
+    }else{
+	return -EINVAL;
+    }
+
+    return inet_pton(af, src, dst);
+}
+
+// convert ipv4 or ipv6 address form binary form to text form
+const char* edpnet_ntop(int type, const void *src, char *dst, int len){
+    int	 af;
+
+    if(type == kEDPNET_ADDR_TYPE_IPV4){
+	af = AF_INET;
+    }else if(type == kEDPNET_ADDR_TYPE_IPV6){
+	af = AF_INET6;
+    }else{
+	return NULL;
+    }
+
+    return inet_ntop(af, src, dst, (socklen_t)len);
+}
+
 
 /*
  * edpnet - sock implementation
@@ -573,11 +609,28 @@ int edpnet_serv_listen(edpnet_serv_t serv, edpnet_addr_t *addr){
     return ret;
 }
 
+/*
+ *
+ */
 int edpnet_init(){
-    return -1;
+    edpnet_data_t	*ed = &__edpnet_data;
+
+    INIT_LIST_HEAD(&ed->ed_socks);
+    INIT_LIST_HEAD(&ed->ed_servs);
+
+    spi_spin_init(&ed->ed_lock);
+
+    ed->ed_init = 1;
+
+    return 0;
 }
 
 int edpnet_fini(){
-    return -1;
+    edpnet_data_t	*ed = &__edpnet_data;
+
+    ed->ed_init = 0;
+    spi_spin_fini(&ed->ed_lock);
+
+    return 0;
 }
 

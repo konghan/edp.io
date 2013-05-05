@@ -74,6 +74,7 @@ static eio_worker_t *worker_lightload(){
     return &(iod->iod_workers[idx]);
 }
 
+// add fd to epoll-handle
 int eio_addfd(int fd,  eio_event_cb cb, void *data){
     eio_data_t		*iod = get_data();
     struct eio_worker	*iwk = worker_lightload();
@@ -81,6 +82,7 @@ int eio_addfd(int fd,  eio_event_cb cb, void *data){
     struct epoll_event  ev;
     int			ret;
 
+    // construct ioe for epoll-wait callbacks
     ioe = mcache_alloc(iod->iod_evcache);
     if(ioe == NULL){
 	log_warn("no enough memory!\n");
@@ -121,6 +123,7 @@ int eio_addfd(int fd,  eio_event_cb cb, void *data){
     return 0;
 }
 
+// delete fd frome epoll-handle
 int eio_delfd(int fd){
     eio_data_t	    *iod = get_data();
     eio_event_t	    *ioe;
@@ -215,6 +218,7 @@ static void *eio_worker_routine(void *data){
 	    ioe = (eio_event_t *)ev->data.ptr;
 	    ASSERT(ioe != NULL);
 
+	    // call fd bind callback function
 	    ioe->ioe_cb(ev->events, ioe->ioe_data);
 	    iwk->iwk_events ++;
 	}
