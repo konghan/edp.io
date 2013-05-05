@@ -23,7 +23,7 @@ typedef struct worker{
     spi_thread_t	wk_thread;  // thread handle
     int			wk_status;  // enum worker_status
 
-    __spi_mutex_t	wk_mutex;
+    __spi_convar_t	wk_convar;
 
     spi_spinlock_t	wk_crit_lock;
     struct list_head	wk_crit_events;
@@ -77,7 +77,7 @@ static inline void worker_do_event(edp_event_t *ev){
 static int worker_init_tls(worker_t *wkr){
     ASSERT(wkr != NULL);
 
-    __spi_mutex_init(&wkr->wk_mutex);
+    __spi_convar_init(&wkr->wk_convar);
 
     spi_spin_init(&wkr->wk_crit_lock);
     INIT_LIST_HEAD(&wkr->wk_crit_events);
@@ -116,7 +116,7 @@ static int worker_fini_tls(worker_t *wkr){
 
     spi_spin_fini(&wkr->wk_crit_lock);
 
-    __spi_mutex_fini(&wkr->wk_mutex);
+    __spi_convar_fini(&wkr->wk_convar);
 
     wkr->wk_status = kWORKER_STATUS_ZERO;
 
@@ -137,14 +137,15 @@ static void *worker_routine(void *data){
 
     wkr->wk_status = kWORKER_STATUS_RUNNING;
 
+    log_info("worker initailized!\n");
+
     while(wkr->wk_status != kWORKER_STATUS_STOP){
-	
-	__spi_mutex_lock(&wkr->wk_mutex);
+	__spi_convar_wait(&wkr->wk_convar);
 
 criti_event:
 	spi_spin_lock(&wkr->wk_crit_lock);
 	if(!list_empty(&wkr->wk_crit_events)){
-	    list_move(&wkr->wk_crit_events, &events);
+	    list_splice_init(&wkr->wk_crit_events, &events);
 	}
 	atomic_reset(&wkr->wk_crit_pending);
 	spi_spin_unlock(&wkr->wk_crit_lock);
@@ -161,7 +162,7 @@ criti_event:
 emerg_event:
 	spi_spin_lock(&wkr->wk_emrg_lock);
 	if(!list_empty(&wkr->wk_emrg_events)){
-	    list_move(&wkr->wk_emrg_events, &events);
+	    list_splice_init(&wkr->wk_emrg_events, &events);
 	}
 	atomic_reset(&wkr->wk_emrg_pending);
 	spi_spin_unlock(&wkr->wk_emrg_lock);
@@ -181,7 +182,7 @@ emerg_event:
 high_event:
 	spi_spin_lock(&wkr->wk_high_lock);
 	if(!list_empty(&wkr->wk_high_events)){
-	    list_move(&wkr->wk_high_events, &events);
+	    list_splice_init(&wkr->wk_high_events, &events);
 	}
 	ratio = atomic_reset(&wkr->wk_high_pending);
 	spi_spin_unlock(&wkr->wk_high_lock);
@@ -206,11 +207,11 @@ high_event:
 norm_event:
 	spi_spin_lock(&wkr->wk_norm_lock);
 	if(!list_empty(&wkr->wk_norm_events)){
-	    list_move_tail(&wkr->wk_norm_events, &events);
+	    list_splice_tail_init(&wkr->wk_norm_events, &events);
 	}
 	atomic_reset(&wkr->wk_norm_pending);
 	spi_spin_unlock(&wkr->wk_norm_lock);
-	
+
 	ratio /= HIGH_NORM_RATIO;
 	list_for_each_safe(pos, tmp, &events){
 	    evt = list_entry(pos, struct edp_event, ev_node);
@@ -236,7 +237,7 @@ norm_event:
 idle_event:
 	spi_spin_lock(&wkr->wk_idle_lock);
 	if(!list_empty(&wkr->wk_idle_events)){
-	    list_move_tail(&wkr->wk_idle_events, &events);
+	    list_splice_tail_init(&wkr->wk_idle_events, &events);
 	}
 	atomic_reset(&wkr->wk_idle_pending);
 	spi_spin_unlock(&wkr->wk_idle_lock);
@@ -257,6 +258,8 @@ idle_event:
 		goto norm_event;
 	}
     }
+
+    log_info("worker loop break:%d\n", wkr->wk_status);
 
     ASSERT(wkr->wk_status == kWORKER_STATUS_STOP);
 
@@ -334,11 +337,11 @@ int __edp_dispatch(edp_event_t *ev){
     }
 
     spi_spin_lock(lock);
-    list_add(&ev->ev_node, lh);
+    list_add_tail(&ev->ev_node, lh);
     atomic_inc(pendings);
     spi_spin_unlock(lock);
 
-    __spi_mutex_unlock(&wkr->wk_mutex);
+    __spi_convar_signal(&wkr->wk_convar);
 
     return 0;
 }

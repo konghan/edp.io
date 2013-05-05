@@ -108,6 +108,7 @@ int emit_dispatch(emit_t em, edp_event_t *ev, edp_event_cb cb, void *data){
 
     ev->ev_cb	= cb;
     ev->ev_data	= data;
+
     ev->ev_handler = emit_event_handler;
     ev->ev_emit	= ee;
 

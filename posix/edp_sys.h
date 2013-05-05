@@ -43,24 +43,61 @@ extern "C"{
 
 #define ASSERT	    assert
 
-// mutex used internally
-typedef pthread_mutex_t	    __spi_mutex_t;
-static inline int __spi_mutex_init(__spi_mutex_t *mtx){
-    return pthread_mutex_init(mtx, NULL);
+// condition variable, used internally
+typedef struct __spi_convar_data{
+    pthread_mutex_t	cv_mutex;
+    pthread_cond_t	cv_convar;
+    int			cv_count;
+}__spi_convar_t;
+
+static inline int __spi_convar_init(__spi_convar_t *cv){
+    int	    ret;
+    ret = pthread_mutex_init(&cv->cv_mutex, NULL);
+    if(ret != 0){
+	return ret;
+    }
+
+    ret = pthread_cond_init(&cv->cv_convar, NULL);
+    if(ret != 0){
+	pthread_mutex_destroy(&cv->cv_mutex);
+	return ret;
+    }
+
+    cv->cv_count = 0;
+
+    return 0;
 }
 
-static inline int __spi_mutex_fini(__spi_mutex_t *mtx){
-    return pthread_mutex_destroy(mtx);
+static inline int __spi_convar_fini(__spi_convar_t *cv){
+    pthread_cond_destroy(&cv->cv_convar);
+    pthread_mutex_destroy(&cv->cv_mutex);
+    return 0;
 }
 
-static inline int __spi_mutex_lock(__spi_mutex_t *mtx){
-    return pthread_mutex_lock(mtx);
+static inline int __spi_convar_signal(__spi_convar_t *cv){
+    pthread_mutex_lock(&cv->cv_mutex);
+    if(cv->cv_count != 0){
+	pthread_mutex_unlock(&cv->cv_mutex);
+	return 0;
+    }else{
+	cv->cv_count = 1;
+    }
+    pthread_cond_signal(&cv->cv_convar);
+    pthread_mutex_unlock(&cv->cv_mutex);
+    return 0;
 }
 
-static inline int __spi_mutex_unlock(__spi_mutex_t *mtx){
-    return pthread_mutex_unlock(mtx);
+static inline int __spi_convar_wait(__spi_convar_t *cv){
+    pthread_mutex_lock(&cv->cv_mutex);
+    while(! cv->cv_count){
+	pthread_cond_wait(&cv->cv_convar, &cv->cv_mutex);
+    }
+    cv->cv_count = 0;
+    pthread_mutex_unlock(&cv->cv_mutex);
+    return 0;
 }
 
+// OS independ interface
 
 typedef pthread_t		spi_thread_t;
 static inline int spi_thread_create(spi_thread_t *thrd,

@@ -17,11 +17,11 @@ extern "C" {
 #define EDP_EVENT_TYPE_MAX	8
 
 enum edp_event_priority{
-    kEDP_EVENT_PRIORITY_CRIT = 0,
-    kEDP_EVENT_PRIORITY_EMRG,
-    kEDP_EVENT_PRIORITY_HIGH,
+    kEDP_EVENT_PRIORITY_IDLE = 0,
     kEDP_EVENT_PRIORITY_NORM,
-    kEDP_EVENT_PRIORITY_IDLE,
+    kEDP_EVENT_PRIORITY_HIGH,
+    kEDP_EVENT_PRIORITY_EMRG,
+    kEDP_EVENT_PRIORITY_CRIT,
 };
 
 struct edp_event;
@@ -47,6 +47,8 @@ static inline void edp_event_init(edp_event_t *ev, short type, short priority){
     ev->ev_type = type;
     ev->ev_priority = priority;
     ev->ev_cpuid = -1;
+
+    INIT_LIST_HEAD(&ev->ev_node);
 }
 
 static inline void edp_event_done(edp_event_t *ev, int errcode){
