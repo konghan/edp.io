@@ -101,6 +101,13 @@ typedef struct edpnet_ioctx{
 
 }edpnet_ioctx_t;
 
+static void edpnet_ioctx_init(edpnet_ioctx_t *ioc, uint32_t type){
+    memset(ioc, 0, sizeof(*ioc));
+    INIT_LIST_HEAD(&ioc->ec_node);
+    ioc->ec_type = type;
+}
+
+
 int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data);
 int edpnet_sock_destroy(edpnet_sock_t sock);
 
@@ -135,7 +142,7 @@ int edpnet_serv_create(edpnet_serv_t *serv, edpnet_serv_cbs_t *cbs, void *data);
 int edpnet_serv_destroy(edpnet_serv_t serv);
 
 int edpnet_serv_listen(edpnet_serv_t serv, edpnet_addr_t *addr);
-int edpnet_serv_close(edpnet_serv_t serv);
+//int edpnet_serv_close(edpnet_serv_t serv);
 
 /*
  * edpnet interfaces

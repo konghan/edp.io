@@ -7,11 +7,13 @@ TARGET = edpio
 
 objs = logger.o mcache.o hset.o
 objs += worker.o emitter.o edp.o
-#objs += epoll_worker.o edp.o
-#objs += edpnet.o
+objs += eio-epoll.o
+objs += edpnet.o
 #objs += main.o
 
 objs-test := emit_test.o
+
+objs-edpnet := serv_test.o
 
 vpath %.c ../src ../lib ../posix
 
@@ -19,6 +21,8 @@ vpath %.c ../src ../lib ../posix
 %.o:%.c
 	-$(CC) $(CFLAGS) -c -o $@ $<
 
+edpnet:$(objs-edpnet) $(objs)
+	$(CC) -Wall -o $(TARGET) $(objs) $(objs-edpnet) $(LDFLAGS)
 
 emit:$(objs-test) $(objs)
 	$(CC) -Wall -o $(TARGET) $(objs) $(objs-test) $(LDFLAGS)

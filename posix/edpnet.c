@@ -21,7 +21,8 @@
 
 #define kEDPNET_SOCK_STATUS_ZERO	0x0000
 #define kEDPNET_SOCK_STATUS_INIT	0x0001
-#define kEDPNET_SOCK_STATUS_CONNECT	0x0002
+#define kEDPNET_SOCK_STATUS_MONITOR	0x0002
+#define kEDPNET_SOCK_STATUS_CONNECT	0x0004
 #define kEDPNET_SOCK_STATUS_WRITE	0x0100
 #define kEDPNET_SOCK_STATUS_READ	0x0200
 
@@ -238,24 +239,21 @@ static int sock_init(edpnet_sock_t sock){
     spi_spin_init(&s->es_lock);
     s->es_status |= kEDPNET_SOCK_STATUS_INIT;
 
-    if(eio_addfd(s->es_sock, sock_worker_cb, s) != 0){
-	log_warn("watch sock handle fail!\n");
-	close(s->es_sock);
-	return -1;
-    }
-
     return 0;
 }
 
 static int sock_fini(edpnet_sock_t sock){
     struct edpnet_sock	*s = sock;
 
-    if(s->es_status != 0){
-	log_warn("fini sock in wrong status!\n");
-	return -1;
-    }
+//    if(s->es_status != 0){
+//	log_warn("fini sock in wrong status!\n");
+//	return -1;
+//    }
 
-    eio_delfd(s->es_sock);
+    if(s->es_status & kEDPNET_SOCK_STATUS_MONITOR){
+	s->es_status &= ~kEDPNET_SOCK_STATUS_MONITOR;
+	eio_delfd(s->es_sock);
+    }
 
     ASSERT(list_empty(&s->es_iowrites));
     spi_spin_fini(&s->es_lock);
@@ -294,8 +292,7 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data){
 	return ret;
     }
 
-    s->es_cbs	= cbs;
-    s->es_data	= data;
+    edpnet_sock_set(s, cbs, data);
     *sock = s;
 
     return 0;
@@ -330,6 +327,14 @@ int edpnet_sock_set(edpnet_sock_t sock, edpnet_sock_cbs_t *cbs, void *data){
     if(data != NULL)
 	s->es_data = data;
 
+    if(!(s->es_status & kEDPNET_SOCK_STATUS_MONITOR)){
+        if(eio_addfd(s->es_sock, sock_worker_cb, s) != 0){
+	    log_warn("watch sock handle fail!\n");
+	    close(s->es_sock);
+	    return -1;
+	}
+	s->es_status |= kEDPNET_SOCK_STATUS_MONITOR;
+    }
     return 0;
 }
 
