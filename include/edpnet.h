@@ -7,6 +7,7 @@
 #define __EDPNET_H__
 
 #include "edp_sys.h"
+#include "ioctx.h"
 
 #include "list.h"
 
@@ -77,7 +78,7 @@ enum edpnet_iocontext_type{
     kEDPNET_IOCTX_TYPE_IODATA,
 };
 
-
+#if 0
 struct edpnet_ioctx;
 typedef void (*edpnet_rwcb)(edpnet_sock_t sock, struct edpnet_ioctx *ioctx, int errcode);
 
@@ -106,7 +107,7 @@ static void edpnet_ioctx_init(edpnet_ioctx_t *ioc, uint32_t type){
     INIT_LIST_HEAD(&ioc->ec_node);
     ioc->ec_type = type;
 }
-
+#endif
 
 int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data);
 int edpnet_sock_destroy(edpnet_sock_t sock);
@@ -116,8 +117,8 @@ int edpnet_sock_set(edpnet_sock_t sock, edpnet_sock_cbs_t *cbs, void *data);
 int edpnet_sock_connect(edpnet_sock_t sock, edpnet_addr_t *addr);
 int edpnet_sock_close(edpnet_sock_t sock);
 
-int edpnet_sock_write(edpnet_sock_t sock, edpnet_ioctx_t *ioctx, edpnet_rwcb cb);
-int edpnet_sock_read(edpnet_sock_t sock, edpnet_ioctx_t *ioctx);
+int edpnet_sock_write(edpnet_sock_t sock, ioctx_t *ioctx, edpnet_writecb cb);
+int edpnet_sock_read(edpnet_sock_t sock, ioctx_t *ioctx);
 
 /*
  * serv - structs & interfaces

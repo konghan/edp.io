@@ -8,6 +8,7 @@
 
 #define kSERV_IOBUF_MAX		256
 
+// server side per session data
 struct serv_data;
 typedef struct sock_session{
     edpnet_sock_t	ss_sock;
@@ -21,6 +22,7 @@ typedef struct sock_session{
     struct list_head	ss_ios;
 }sock_sess_t;
 
+// server local data
 typedef struct serv_data{
     edpnet_serv_t	sd_serv;
     edpnet_serv_cbs_t	sd_cbs;
@@ -31,9 +33,11 @@ typedef struct serv_data{
 
 static serv_data_t  __serv_data = {};
 
-static void ioctx_free(edpnet_ioctx_t *ioc);
-static edpnet_ioctx_t *ioctx_alloc(uint32_t type, uint32_t size){
-    edpnet_ioctx_t  *ioc;
+// implementations
+
+static void ioctx_free(ioctx_t *ioc);
+static ioctx_t *ioctx_alloc(uint16_t iotype, size_t size){
+    ioctx_t  *ioc;
 
     ASSERT(size > 0);
 
@@ -41,23 +45,24 @@ static edpnet_ioctx_t *ioctx_alloc(uint32_t type, uint32_t size){
     if(ioc == NULL){
 	return NULL;
     }
+    ioctx_init(ioc, iotype, kIOCTX_DATA_TYPE_PTR);
 
-    ioc->ec_data = mheap_alloc(size);
-    if(ioc->ec_data == NULL){
+    ioc->ioc_data = mheap_alloc(size);
+    if(ioc->ioc_data == NULL){
 	ioctx_free(ioc);
 	return NULL;
     }
-
-    edpnet_ioctx_init(ioc, type);
-    ioc->ec_size = size;
+    ioc->ioc_size = size;
 
     return ioc;
 }
 
-static void ioctx_free(edpnet_ioctx_t *ioc){
+static void ioctx_free(ioctx_t *ioc){
     ASSERT(ioc != NULL);
 
-    mheap_free(ioc->ec_data);
+    if(ioc->ioc_data_type == kIOCTX_DATA_TYPE_PTR)
+	mheap_free(ioc->ioc_data);
+
     mheap_free(ioc);
 }
 
@@ -65,20 +70,20 @@ static void sock_connect(edpnet_sock_t sock, void *data){
     log_info("sock is connected\n");
 }
 
-void sock_write_cb(edpnet_sock_t sock, struct edpnet_ioctx *ioctx, int errcode){
-    ioctx_free(ioctx);
+void sock_write_cb(edpnet_sock_t sock, struct ioctx *ioc, int errcode){
+    ioctx_free(ioc);
 }
 
 static void data_ready(edpnet_sock_t sock, void *data){
-    sock_sess_t	    *ss = (sock_sess_t *)data;
-    edpnet_ioctx_t  *ioc;
-    int		    ret;
+    sock_sess_t	*ss = (sock_sess_t *)data;
+    ioctx_t	*ioc;
+    int		ret;
 
     log_info("data ready for read\n");
     ASSERT(ss != NULL);
 
     while(1){
-	ioc = ioctx_alloc(kEDPNET_IOCTX_TYPE_IODATA, kSERV_IOBUF_MAX);
+	ioc = ioctx_alloc(kIOCTX_IO_TYPE_SOCK, kSERV_IOBUF_MAX);
         if(ioc == NULL){
 	    log_warn("alloc ioctx fail\n");
 	    break;
