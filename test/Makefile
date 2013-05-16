@@ -13,16 +13,21 @@ objs += edpnet.o
 
 objs-test := emit_test.o
 
-objs-edpnet := serv_test.o
+objs-serv := serv_test.o
+
+objs-sock := sock_test.o
 
 vpath %.c ../src ../lib ../posix
-
 
 %.o:%.c
 	-$(CC) $(CFLAGS) -c -o $@ $<
 
-edpnet:$(objs-edpnet) $(objs)
-	$(CC) -Wall -o $(TARGET) $(objs) $(objs-edpnet) $(LDFLAGS)
+
+sock:$(objs-sock) $(objs)
+	$(CC) -Wall -o $(TARGET) $(objs) $(objs-sock) $(LDFLAGS)
+
+serv:$(objs-serv) $(objs)
+	$(CC) -Wall -o $(TARGET) $(objs) $(objs-serv) $(LDFLAGS)
 
 emit:$(objs-test) $(objs)
 	$(CC) -Wall -o $(TARGET) $(objs) $(objs-test) $(LDFLAGS)
@@ -33,6 +38,6 @@ emit:$(objs-test) $(objs)
 
 
 clean:
-	rm -f $(objs) $(TARGET) $(objs-test)
+	rm -f $(objs) $(TARGET) $(objs-test) $(objs-serv) $(objs-sock)
 
 

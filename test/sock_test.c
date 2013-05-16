@@ -1,94 +1,165 @@
 
 #include "edp.h"
+#include "edpnet.h"
 #include "emitter.h"
 
 #include "logger.h"
 #include "mcache.h"
 
+#define kSERV_IOBUF_MAX		256
 
-struct emit_test{
-    emit_t	et_emit;
+// sock data
+typedef struct sock_data{
+    edpnet_sock_t	sd_sock;
+    edpnet_sock_cbs_t	sd_cbs;
+}sock_data_t;
 
-    // user define data
-    struct emit_test *et_other;
-};
+static const char __msg[] = "sock test string...\n\0";
+static const short __port = 4040;
 
-static void sendrecv_cb(struct edp_event *ev, void *data, int errcode){
-    static int count = 10;
-    struct emit_test *e  = (struct emit_test *)data;
+static sock_data_t  __sock_data = {};
 
+// implementations
 
-    count --;
-    if(count > 0){
-	log_info("redispatch event:%d - %d\n", e->et_other, e->et_other->et_emit);
-	edp_event_init(ev, 0, kEDP_EVENT_PRIORITY_NORM);
-	emit_dispatch(e->et_other->et_emit, ev, sendrecv_cb, e->et_other);
-    }else{
-        mheap_free(ev);
+static void ioctx_free(ioctx_t *ioc);
+static ioctx_t *ioctx_alloc(uint16_t iotype, size_t size){
+    ioctx_t  *ioc;
+
+    ASSERT(size > 0);
+
+    ioc = mheap_alloc(sizeof(*ioc));
+    if(ioc == NULL){
+	return NULL;
     }
+    ioctx_init(ioc, iotype, kIOCTX_DATA_TYPE_PTR);
+
+    ioc->ioc_data = mheap_alloc(size);
+    if(ioc->ioc_data == NULL){
+	ioctx_free(ioc);
+	return NULL;
+    }
+    ioc->ioc_size = size;
+
+    return ioc;
 }
 
-static int send_handler(emit_t em, edp_event_t *ev){
-    log_info("send handler is called!\n");
+static void ioctx_free(ioctx_t *ioc){
+    ASSERT(ioc != NULL);
 
-    return 0;
+    if(ioc->ioc_data_type == kIOCTX_DATA_TYPE_PTR)
+	mheap_free(ioc->ioc_data);
+
+    mheap_free(ioc);
 }
 
-static int recv_handler(emit_t em, edp_event_t *ev){
-    log_info("recv handler is called!\n");
+void sock_write_cb(edpnet_sock_t sock, struct ioctx *ioc, int errcode){
+    ioctx_free(ioc);
+}
 
-    return 0;
+static void sock_connect(edpnet_sock_t sock, void *data){
+    sock_data_t	*sd = (sock_data_t *)data;
+    ioctx_t	*ioc;
+
+    log_info("sock is connected\n");
+
+    ASSERT(sd != NULL);
+
+    ioc = ioctx_alloc(kIOCTX_IO_TYPE_SOCK, kSERV_IOBUF_MAX);
+    if(ioc == NULL){
+	log_warn("alloc ioctx fail\n");
+	return ;
+    }
+    strncpy(ioc->ioc_data, __msg, strlen(__msg));
+    ioc->ioc_size = strlen(__msg);
+
+    edpnet_sock_write(sd->sd_sock, ioc, sock_write_cb);
 }
 
 
-static struct emit_test	    __e1 = {};
-static struct emit_test	    __e2 = {};
+static void data_ready(edpnet_sock_t sock, void *data){
+    sock_data_t	*sd = (sock_data_t *)data;
+    ioctx_t	*ioc;
+    int		ret;
 
-int emit_test(){
-    struct edp_event *ev;
-    int	    ret;
+    log_info("data ready for read\n");
+    ASSERT(sd != NULL);
 
-    __e1.et_other = &__e2;
-    __e2.et_other = &__e1;
-
-    ev = mheap_alloc(sizeof(*ev));
-    if(ev == NULL){
-	log_info("alloc ev fail!\n");
-	return -ENOMEM;
+    ioc = ioctx_alloc(kIOCTX_IO_TYPE_SOCK, kSERV_IOBUF_MAX);
+    if(ioc == NULL){
+	log_warn("alloc ioctx fail\n");
+	return ;
+    }
+    
+    ret = edpnet_sock_read(sd->sd_sock, ioc);
+    if(ret < 0){
+        log_warn("no more data\n");
+        ioctx_free(ioc);
+	return ;
     }
 
-    ret = emit_create(NULL, &__e1.et_emit);
+    edpnet_sock_write(sd->sd_sock, ioc, sock_write_cb);
+}
+
+static void data_drain(edpnet_sock_t sock, void *data){
+    log_info("data drain for write\n");
+}
+
+static void sock_error(edpnet_sock_t sock, void *data){
+    log_info("sock error\n");
+}
+
+static void sock_close(edpnet_sock_t sock, void *data){
+    log_info("sock close\n");
+}
+
+static int sock_init(){
+    sock_data_t	    *sd = &__sock_data;
+    edpnet_addr_t   addr;
+    int		    ret;
+
+    sd->sd_cbs.sock_connect = sock_connect;
+    sd->sd_cbs.sock_close   = sock_close;
+    sd->sd_cbs.sock_error   = sock_error;
+    sd->sd_cbs.data_ready   = data_ready;
+    sd->sd_cbs.data_drain   = data_drain;
+
+    log_info("sock init been called!\n");
+
+    ret = edpnet_sock_create(&sd->sd_sock, &sd->sd_cbs, sd);
     if(ret != 0){
-	log_info("create emit 1 fail:%d\n", ret);
-	mheap_free(ev);
-	return ret;
+	log_warn("create edpnet sock fail:%d\n", ret);
+	return -1;
     }
-    emit_add_handler(__e1.et_emit, 0, send_handler);
+    log_info("create sock success\n");
 
-    ret = emit_create(NULL, &__e2.et_emit);
+    addr.ea_type = kEDPNET_ADDR_TYPE_IPV4;
+    ret = edpnet_pton(kEDPNET_ADDR_TYPE_IPV4, "127.0.0.1", &addr.ea_v4.eia_ip);
     if(ret != 0){
-	log_info("create emit 2 fail:%d\n", ret);
-	emit_destroy(__e1.et_emit);
-	mheap_free(ev);
-	return ret;
+	log_warn("conver ip string to binary fail:%d\n", ret);
+	edpnet_sock_destroy(sd->sd_sock);
+	return -1;
     }
-    emit_add_handler(__e2.et_emit, 0, recv_handler);
+    addr.ea_v4.eia_port = __port;
 
-    edp_event_init(ev, 0, kEDP_EVENT_PRIORITY_NORM);
+    log_info("initialize address ok\n");
 
-    emit_dispatch(__e1.et_emit, ev, sendrecv_cb, &__e1);
-//    emit_dispatch(__e2.et_emit, ev, sendrecv_cb, &__e2);
+    ret = edpnet_sock_connect(sd->sd_sock, &addr);
+    if(ret != 0){
+	log_warn("edpnet sock listen fail:%d\n", ret);
+	edpnet_sock_destroy(sd->sd_sock);
+	return -1;
+    }
+
+    log_info("call sock connect...\n");
 
     return 0;
 }
-
 
 int main(){
     edp_init(1);
 
     // initializing your application
-
-    emit_test();
+    sock_init();
 
     edp_loop();
 

@@ -60,7 +60,7 @@ int edpnet_pton(int type, const char *src, void *dst){
 	return -EINVAL;
     }
 
-    return inet_pton(af, src, dst);
+    return (inet_pton(af, src, dst) == 1) ? 0 : -EINVAL;
 }
 
 // convert ipv4 or ipv6 address form binary form to text form
@@ -289,6 +289,8 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data){
     struct edpnet_sock	*s;
     int			ret;
 
+    log_info("sock create been called\n");
+
     if(!ed->ed_init){
 	log_warn("ednet not inited!\n");
 	return -1;
@@ -300,6 +302,8 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data){
 	return -ENOMEM;
     }
     memset(s, 0, sizeof(*s));
+
+    log_info("alloc memory for sock\n");
     
     s->es_sock = socket(PF_INET, SOCK_STREAM, 0);
     if(s->es_sock < 0){
@@ -308,6 +312,8 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data){
 	return -1;
     }
 
+    log_info("sock handle been created\n");
+
     ret = sock_init(s);
     if(ret != 0){
 	log_warn("initialize sock failure!\n");
@@ -315,9 +321,12 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data){
 	return ret;
     }
 
+    log_info("sock data have been init\n");
+
     edpnet_sock_set(s, cbs, data);
     *sock = s;
 
+    log_info("sock been create ok\n");
     return 0;
 }
 
@@ -350,6 +359,8 @@ int edpnet_sock_set(edpnet_sock_t sock, edpnet_sock_cbs_t *cbs, void *data){
     if(data != NULL)
 	s->es_data = data;
 
+    log_info("befor eio addfd\n");
+
     if(!(s->es_status & kEDPNET_SOCK_STATUS_MONITOR)){
         if(eio_addfd(s->es_sock, sock_worker_cb, s) != 0){
 	    log_warn("watch sock handle fail!\n");
@@ -375,13 +386,13 @@ int edpnet_sock_connect(edpnet_sock_t sock, edpnet_addr_t *addr){
 	//FIXME: IPv6 support
 	ASSERT(0);
     }else{
-	log_warn("IP address type is unkonw:%d\n", addr->ea_type);
+	log_warn("IP address type is unknow:%d\n", addr->ea_type);
 	return -1;
     }
 
     ret = connect(s->es_sock, (struct sockaddr *)&sa, sizeof(sa));
-    if(ret < 0){
-	log_warn("connect to serv failure!\n");
+    if((ret < 0) && (errno != EINPROGRESS)){
+	log_warn("connect to serv failure:%d\n", errno);
 	return ret;
     }
 
@@ -632,6 +643,11 @@ int edpnet_serv_listen(edpnet_serv_t serv, edpnet_addr_t *addr){
 int edpnet_init(){
     edpnet_data_t	*ed = &__edpnet_data;
 
+    if(eio_init(1) != 0){
+	log_warn("init eio fail\n");
+	return -1;
+    }
+
     INIT_LIST_HEAD(&ed->ed_socks);
     INIT_LIST_HEAD(&ed->ed_servs);
 
@@ -644,6 +660,8 @@ int edpnet_init(){
 
 int edpnet_fini(){
     edpnet_data_t	*ed = &__edpnet_data;
+
+    eio_fini();
 
     ed->ed_init = 0;
     spi_spin_fini(&ed->ed_lock);

@@ -6,6 +6,7 @@
 #include "edp.h"
 #include "worker.h"
 #include "emitter.h"
+#include "edpnet.h"
 
 #include "logger.h"
 #include "mcache.h"
@@ -49,7 +50,17 @@ int edp_init(int thread_num){
     }
     log_info("emit have been initialized!\n");
 
+    ret = edpnet_init();
+    if(ret != 0){
+	log_warn("init edpnet fail:%d\n", ret);
+	goto exit_net;
+    }
+    log_info("edpnet have been initialized!\n");
+
     return 0;
+
+exit_net:
+    emit_fini();
 
 exit_emit:
     worker_fini();
@@ -76,6 +87,8 @@ int edp_loop(){
 }
 
 int edp_fini(){
+
+    edpnet_fini();
 
     emit_fini();
 

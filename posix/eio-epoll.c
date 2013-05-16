@@ -19,6 +19,8 @@
 // eio worker thread's local data
 typedef struct eio_worker{
     int			iwk_init;
+
+    __spi_convar_t	iwk_convar;
     
     int			iwk_epoll;  // epoll fd
     spi_thread_t	iwk_thread; // thread handle
@@ -69,7 +71,7 @@ static eio_worker_t *worker_lightload(){
     // FIXME: determine witch one is light load
     spi_spin_lock(&iod->iod_lock);
     idx = iod->iod_round++ % iod->iod_num;
-    spi_spin_lock(&iod->iod_lock);
+    spi_spin_unlock(&iod->iod_lock);
 
     return &(iod->iod_workers[idx]);
 }
@@ -82,6 +84,7 @@ int eio_addfd(int fd,  eio_event_cb cb, void *data){
     struct epoll_event  ev;
     int			ret;
 
+    log_info("---------eio addfd -------\n");
     // construct ioe for epoll-wait callbacks
     ioe = mcache_alloc(iod->iod_evcache);
     if(ioe == NULL){
@@ -95,6 +98,7 @@ int eio_addfd(int fd,  eio_event_cb cb, void *data){
     ioe->ioe_ent.hse_hash = (uint32_t)fd;
     ioe->ioe_worker = iwk;
 
+    log_info("add fd & data to hset\n");
     spi_spin_lock(&iod->iod_lock);
     ret = hset_add(iod->iod_fds, &ioe->ioe_ent);
     spi_spin_unlock(&iod->iod_lock);
@@ -107,6 +111,9 @@ int eio_addfd(int fd,  eio_event_cb cb, void *data){
     ev.events   = EPOLLIN | EPOLLOUT;
     ev.data.ptr = ioe;
 
+    log_info("add fd to epoll\n");
+
+    log_info("call epoll ctl\n");
     ret = epoll_ctl(iwk->iwk_epoll, EPOLL_CTL_ADD, fd, &ev);
     if(ret != 0){
 	log_warn("epoll add watch fd:%d fail!\n", fd);
@@ -205,6 +212,11 @@ static void *eio_worker_routine(void *data){
     }
     memset(events, 0, msz);
 
+    log_info("eio worker routine running\n");
+
+    // yes, I'm working
+    __spi_convar_signal(&iwk->iwk_convar);
+
     while(iwk->iwk_init){
 	evcnt = epoll_wait(iwk->iwk_epoll, events, EPOLL_MAX_EVENTS, -1);
 	if(evcnt < 0){
@@ -245,7 +257,7 @@ int eio_init(int thread_num){
     }
     memset(iod, 0, msz);
 
-    ret = mcache_create(sizeof(eio_event_t), sizeof(int), 0, &iod->iod_evcache);
+    ret = mcache_create(sizeof(eio_event_t), sizeof(void *), 0, &iod->iod_evcache);
     if(ret != 0){
 	log_warn("create mcache fail:%d\n", ret);
 	goto exit_mcache;
@@ -261,13 +273,30 @@ int eio_init(int thread_num){
 
     for(i = 0; i < thread_num; i++){
 	iwk = &(iod->iod_workers[i]);
+	
+	ret = __spi_convar_init(&iwk->iwk_convar);
+	if(ret != 0){
+	    log_warn("create thread convar fail:%d\n", ret);
+	    goto exit_thread;
+	}
+
 	ret = spi_thread_create(&iwk->iwk_thread, eio_worker_routine, iwk);
 	if(ret != 0){
 	    log_warn("create thread fail:%d\n", ret);
+	    __spi_convar_fini(&iwk->iwk_convar);
+	    goto exit_thread;
+	}
+
+	ret = __spi_convar_timedwait(&iwk->iwk_convar, 1000);
+	if(ret != 0){
+	    log_warn("thread not run:\n", ret);
+	    spi_thread_destroy(iwk->iwk_thread);
+	    __spi_convar_fini(&iwk->iwk_convar);
 	    goto exit_thread;
 	}
     }
 
+    iod->iod_num = thread_num;
     iod->iod_init = 1;
     __eio_data = iod;
 
@@ -277,6 +306,7 @@ exit_thread:
     for(; i >= 0; i--){
 	iwk = &(iod->iod_workers[i]);
 	spi_thread_destroy(iwk->iwk_thread);
+	__spi_convar_fini(&iwk->iwk_convar);
     }
 
     hset_destroy(iod->iod_fds);
@@ -306,6 +336,7 @@ int eio_fini(){
     for(i = 0; i < iod->iod_num; i++){
 	iwk = &(iod->iod_workers[i]);
 	spi_thread_destroy(iwk->iwk_thread);
+	__spi_convar_fini(&iwk->iwk_convar);
     }
 
     hset_destroy(iod->iod_fds);

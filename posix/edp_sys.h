@@ -14,6 +14,7 @@
 #include <unistd.h>
 
 #include <pthread.h>
+#include <sys/time.h>
 
 #ifdef __cplusplus
 extern "C"{
@@ -67,8 +68,31 @@ static inline int __spi_convar_signal(__spi_convar_t *cv){
 
 static inline int __spi_convar_wait(__spi_convar_t *cv){
     pthread_mutex_lock(&cv->cv_mutex);
-    while(! cv->cv_count){
+    if(cv->cv_count == 0){
 	pthread_cond_wait(&cv->cv_convar, &cv->cv_mutex);
+    }
+    cv->cv_count = 0;
+    pthread_mutex_unlock(&cv->cv_mutex);
+    return 0;
+}
+
+static inline int __spi_convar_timedwait(__spi_convar_t *cv, uint32_t ms){
+    struct timespec	ts;
+    struct timeval	tv;
+    int			ret;
+
+    gettimeofday(&tv, NULL);
+
+    ts.tv_sec = tv.tv_sec;
+    ts.tv_nsec = (tv.tv_usec + ms) * 1000;
+
+    pthread_mutex_lock(&cv->cv_mutex);
+    if(cv->cv_count == 0){
+	ret = pthread_cond_timedwait(&cv->cv_convar, &cv->cv_mutex, &ts);
+	if(ret != 0){
+	    pthread_mutex_unlock(&cv->cv_mutex);
+	    return -ETIMEDOUT;
+	}
     }
     cv->cv_count = 0;
     pthread_mutex_unlock(&cv->cv_mutex);

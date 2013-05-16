@@ -25,6 +25,8 @@ typedef struct worker{
 
     __spi_convar_t	wk_convar;
 
+    __spi_convar_t	wk_event;
+
     spi_spinlock_t	wk_crit_lock;
     struct list_head	wk_crit_events;
     atomic_t		wk_crit_pending;
@@ -49,10 +51,6 @@ typedef struct worker{
     struct list_head	wk_idle_events;
     atomic_t		wk_idle_pending;
     atomic_t		wk_idle_handled;
-
-    struct list_head	wk_events;
-    atomic_t		wk_event_pending;
-
 }worker_t;
 
 typedef struct worker_data{
@@ -77,7 +75,7 @@ static inline void worker_do_event(edp_event_t *ev){
 static int worker_init_tls(worker_t *wkr){
     ASSERT(wkr != NULL);
 
-    __spi_convar_init(&wkr->wk_convar);
+    __spi_convar_init(&wkr->wk_event);
 
     spi_spin_init(&wkr->wk_crit_lock);
     INIT_LIST_HEAD(&wkr->wk_crit_events);
@@ -116,7 +114,7 @@ static int worker_fini_tls(worker_t *wkr){
 
     spi_spin_fini(&wkr->wk_crit_lock);
 
-    __spi_convar_fini(&wkr->wk_convar);
+    __spi_convar_fini(&wkr->wk_event);
 
     wkr->wk_status = kWORKER_STATUS_ZERO;
 
@@ -139,8 +137,10 @@ static void *worker_routine(void *data){
 
     log_info("worker initailized!\n");
 
+    __spi_convar_signal(&wkr->wk_convar);
+
     while(wkr->wk_status != kWORKER_STATUS_STOP){
-	__spi_convar_wait(&wkr->wk_convar);
+	__spi_convar_wait(&wkr->wk_event);
 
 criti_event:
 	spi_spin_lock(&wkr->wk_crit_lock);
@@ -341,7 +341,7 @@ int __edp_dispatch(edp_event_t *ev){
     atomic_inc(pendings);
     spi_spin_unlock(lock);
 
-    __spi_convar_signal(&wkr->wk_convar);
+    __spi_convar_signal(&wkr->wk_event);
 
     return 0;
 }
@@ -363,8 +363,24 @@ int worker_init(int thread){
 
     for(i = 0; i < thread; i++){
 	wkr = &(wd->wd_threads[i]);
+	ret = __spi_convar_init(&wkr->wk_convar);
+	if(ret != 0){
+	    log_warn("initialize convar fail:%d\n", ret);
+	    break;
+	}
+
         ret = spi_thread_create(&wkr->wk_thread, worker_routine, wkr);
 	if(ret != 0){
+	    log_warn("create work thread fail:%d\n", ret);
+	    __spi_convar_fini(&wkr->wk_convar);
+	    break;
+	}
+
+	ret = __spi_convar_timedwait(&wkr->wk_convar, 1000);
+	if(ret != 0){
+	    log_warn("work thread not run:%d - %d\n", ret, ETIMEDOUT);
+	    spi_thread_destroy(wkr->wk_thread);
+	    __spi_convar_fini(&wkr->wk_convar);
 	    break;
 	}
     }
@@ -373,6 +389,7 @@ int worker_init(int thread){
 	for(; i>= 0; i--){
 	    wkr = &(wd->wd_threads[i]);
 	    spi_thread_destroy(wkr->wk_thread);
+	    __spi_convar_fini(&wkr->wk_convar);
 	}
 	mheap_free(wd->wd_threads);
     }else{
@@ -392,6 +409,8 @@ int worker_fini(){
 	wd->wd_init = 0;
 	for(i = wd->wd_thread_num; i >= 0; i--){
 	    wkr = &(wd->wd_threads[i]);
+	    __spi_convar_fini(&wkr->wk_convar);
+
 	    wkr->wk_status = kWORKER_STATUS_STOP; // let it stop
 //	    spi_thread_destroy(&wkr->wk_thread);
 	    //FIXME:join it

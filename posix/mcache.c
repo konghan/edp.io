@@ -6,6 +6,8 @@
 #include "mcache.h"
 #include "atomic.h"
 
+#include "logger.h"
+
 struct mem_cache{
     size_t	mc_size;
     size_t	mc_align;
@@ -16,9 +18,11 @@ struct mem_cache{
 };
 
 static void *align_alloc(size_t size, size_t align){
-    void *ptr;
+    void    *ptr;
+    int	    ret;
 
-    if(posix_memalign(&ptr, align, size)){
+    ret = posix_memalign(&ptr, align, size);
+    if(ret != 0){
 	return NULL;
     }
 
@@ -39,7 +43,7 @@ int mcache_create(size_t size, size_t align, int flags, mcache_t *mc){
     memset(m, 0, sizeof(*m));
 
     m->mc_size	= size;
-    m->mc_align	= align;
+    m->mc_align	= (sizeof(void*) >= align) ? sizeof(void*) : align;
     m->mc_flags	= flags;
 
     *mc = m;
