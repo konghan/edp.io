@@ -228,24 +228,28 @@ static int edpnet_sock_epollout_handler(emit_t em, edp_event_t *ev){
 	s->es_status |= kEDPNET_SOCK_STATUS_CONNECT;
 	spi_spin_unlock(&s->es_lock);
 
-	// call write ready callback
-	s->es_cbs->data_drain(s, s->es_data);
+	// call connect callback
+	s->es_cbs->sock_connect(s, s->es_data);
 
     }else if(s->es_status & kEDPNET_SOCK_STATUS_WRITE){
-	ASSERT(s->es_write != NULL);
-	
-	// current write io is ok
         spi_spin_lock(&s->es_lock);
-        ioc = s->es_write;
-        s->es_write = NULL;
-        spi_spin_unlock(&s->es_lock);
+	if(s->es_write != NULL){
+	    
+	    // current write io is oky
+	    ioc = s->es_write;
+	    s->es_write = NULL;
+	    spi_spin_unlock(&s->es_lock);
 
-        // call current write io's callbacks
-        ioc->ioc_iocb(s, ioc, 0);
-
-        // write next io to sock
-        sock_write_next(s, 1);
+	    // call current write io's callbacks
+	    ioc->ioc_iocb(s, ioc, 0);
+	}else{
+	    spi_spin_unlock(&s->es_lock);
+	    
+	    // write next io to sock
+	    sock_write_next(s, 1);
+	}
     }else{
+	// call drain to notify caller
 	s->es_cbs->data_drain(s, s->es_data);
     }
 
@@ -306,13 +310,13 @@ static int edpnet_sock_epollhup_handler(emit_t em, edp_event_t *ev){
     return 0;
 }
 
-void edpnet_sock_done(edp_event_t *ev, void *data, int errcode){
+static void edpnet_sock_done(edp_event_t *ev, void *data, int errcode){
     ASSERT(ev != NULL);
 
     edpnet_free_event(ev);
 }
 
-int edpnet_sock_dispatch(struct edpnet_sock *sock, enum edpnet_sock_handler type){
+static int edpnet_sock_dispatch(struct edpnet_sock *sock, enum edpnet_sock_handler type){
     edp_event_t	    *ev;
     int		    ret;
 
@@ -537,7 +541,8 @@ int edpnet_sock_write(edpnet_sock_t sock, ioctx_t *io, edpnet_writecb cb){
 	    cb(sock, io, ret);
 
 	    // write another pending write io
-	    sock_write_next(s, 0);
+	    edpnet_sock_dispatch(s, kEDPNET_SOCK_EPOLLOUT);
+//	    sock_write_next(s, 0);
 	}else{
 	    // write return EAGAIN or EWOULDBLOCK
 	    // do nothing
