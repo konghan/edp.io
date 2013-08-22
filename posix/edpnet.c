@@ -3,6 +3,8 @@
  * Distributed under the BSD license, see the LICENSE file.
  */
 
+#include "edp.h"
+#include "emitter.h"
 #include "edpnet.h"
 #include "eio.h"
 
@@ -32,9 +34,28 @@ typedef struct edpnet_data{
 
     struct list_head	ed_socks;
     struct list_head	ed_servs;
+
+    mcache_t		ed_evcache;
 }edpnet_data_t;
 
 static edpnet_data_t	__edpnet_data = {};
+
+static inline edp_event_t * edpnet_alloc_event(){
+    edpnet_data_t   *ed = &__edpnet_data;
+
+    if(!ed->ed_init)
+	return NULL;
+
+    return (edp_event_t *)mcache_alloc(ed->ed_evcache);
+}
+
+static inline void edpnet_free_event(edp_event_t *ev){
+    edpnet_data_t   *ed = &__edpnet_data;
+
+    ASSERT(ed->ed_init);
+
+    mcache_free(ed->ed_evcache, ev);
+}
 
 static int set_nonblock(int sock){
     int	flags;
@@ -91,12 +112,18 @@ const char* edpnet_ntop(int type, const void *src, char *dst, int len){
 #define kEDPNET_SOCK_STATUS_WRITE	0x0100
 #define kEDPNET_SOCK_STATUS_READ	0x0200
 
+enum edpnet_sock_handler{
+    kEDPNET_SOCK_EPOLLOUT = 0,
+    kEDPNET_SOCK_EPOLLIN,
+    kEDPNET_SOCK_EPOLLERR,
+    kEDPNET_SOCK_EPOLLHUP,
+};
 
 struct edpnet_sock{
     int			es_status;
 
-    int			es_sock;    // sock handle
-    struct list_head	es_node;    // link to owner
+    int			es_sock;	// sock handle
+    struct list_head	es_node;	// link to owner
 
     spi_spinlock_t	es_lock;	// data protect lock
     atomic_t		es_pendios;	// pending write io number
@@ -105,6 +132,8 @@ struct edpnet_sock{
 
     edpnet_sock_cbs_t	*es_cbs;	// async event callbacks
     void		*es_data;	// user private data
+
+    emit_t		es_emit;
 };
 
 static inline int sock_write(int sock, ioctx_t *io){
@@ -137,7 +166,7 @@ static inline int sock_write(int sock, ioctx_t *io){
     return ret;
 }
 
-static inline void sock_write_next(struct edpnet_sock *s){
+static inline void sock_write_next(struct edpnet_sock *s, int drain){
     struct list_head	*lhn = NULL;
     ioctx_t		*ion = NULL;
     int			nowrite = 1;
@@ -166,7 +195,7 @@ static inline void sock_write_next(struct edpnet_sock *s){
 	spi_spin_unlock(&s->es_lock);
 
 	ret = sock_write(s->es_sock, ion);
-	if(ret < 0){
+	if(ret != 0){
 	    spi_spin_lock(&s->es_lock);
 	    s->es_write = NULL;
 	    spi_spin_unlock(&s->es_lock);
@@ -177,7 +206,7 @@ static inline void sock_write_next(struct edpnet_sock *s){
 	}
     }
 
-    if(nowrite){
+    if((nowrite)&&(!drain)){
 	spi_spin_lock(&s->es_lock);
 	s->es_status &= ~kEDPNET_SOCK_STATUS_WRITE;
 	spi_spin_unlock(&s->es_lock);
@@ -186,65 +215,145 @@ static inline void sock_write_next(struct edpnet_sock *s){
 	s->es_cbs->data_drain(s, s->es_data);
     }
 }
- 
-static void sock_worker_cb(uint32_t events, void *data){
-    struct edpnet_sock	*s = (struct edpnet_sock *)data;
-    ioctx_t		*ioc = NULL;
-    int			ready = 0;
 
+static int edpnet_sock_epollout_handler(emit_t em, edp_event_t *ev){
+    struct edpnet_sock	*s;
+    ioctx_t		*ioc = NULL;
+
+    s = emit_get(em);
     ASSERT(s != NULL);
 
-    if(events & (EPOLLPRI | EPOLLIN)){
-	if(s->es_status & kEDPNET_SOCK_STATUS_CONNECT){
-	    // data come in
-	    spi_spin_lock(&s->es_lock);
-	    if(!(s->es_status & kEDPNET_SOCK_STATUS_READ)){
-		s->es_status |= kEDPNET_SOCK_STATUS_READ;
-		ready = 1;
-	    }
-	    spi_spin_unlock(&s->es_lock);
+    if(!(s->es_status & kEDPNET_SOCK_STATUS_CONNECT)){
+	spi_spin_lock(&s->es_lock);
+	s->es_status |= kEDPNET_SOCK_STATUS_CONNECT;
+	spi_spin_unlock(&s->es_lock);
 
-	    // call user regiested callback:data_ready
-	    if(ready)
-		s->es_cbs->data_ready(s, s->es_data);
-	}else{
-	    // sock have connected
-	    spi_spin_lock(&s->es_lock);
-	    s->es_status |= kEDPNET_SOCK_STATUS_CONNECT;
-	    spi_spin_unlock(&s->es_lock);
-	}
-    }
+	// call write ready callback
+	s->es_cbs->data_drain(s, s->es_data);
 
-    if(events & EPOLLOUT){
-	ASSERT(s->es_status & kEDPNET_SOCK_STATUS_CONNECT);
-	ASSERT(s->es_status & kEDPNET_SOCK_STATUS_WRITE);
+    }else if(s->es_status & kEDPNET_SOCK_STATUS_WRITE){
 	ASSERT(s->es_write != NULL);
 	
 	// current write io is ok
-	spi_spin_lock(&s->es_lock);
-	ioc = s->es_write;
-	s->es_write = NULL;
-	spi_spin_unlock(&s->es_lock);
+        spi_spin_lock(&s->es_lock);
+        ioc = s->es_write;
+        s->es_write = NULL;
+        spi_spin_unlock(&s->es_lock);
 
-	// call current write io's callbacks
-	ioc->ioc_iocb(s, ioc, 0);
+        // call current write io's callbacks
+        ioc->ioc_iocb(s, ioc, 0);
 
-	// write next io to sock
-	sock_write_next(s);
+        // write next io to sock
+        sock_write_next(s, 1);
+    }else{
+	s->es_cbs->data_drain(s, s->es_data);
+    }
+
+    return 0;
+}
+
+static int edpnet_sock_epollin_handler(emit_t em, edp_event_t *ev){
+    struct edpnet_sock	*s;
+    int			ready = 0;
+
+    s = emit_get(em);
+    ASSERT(s != NULL);
+
+    ASSERT(s->es_status & kEDPNET_SOCK_STATUS_CONNECT);
+	
+    // data come in
+    spi_spin_lock(&s->es_lock);
+    if(!(s->es_status & kEDPNET_SOCK_STATUS_READ)){
+	s->es_status |= kEDPNET_SOCK_STATUS_READ;
+	ready = 1;
+    }
+    spi_spin_unlock(&s->es_lock);
+
+    // call user regiested callback:data_ready
+    if(ready)
+	s->es_cbs->data_ready(s, s->es_data);
+    
+    return 0;
+}
+
+static int edpnet_sock_epollerr_handler(emit_t em, edp_event_t *ev){
+    struct edpnet_sock	*s;
+
+    s = emit_get(em);
+    ASSERT(s != NULL);
+
+    s->es_cbs->sock_error(s, s->es_data);
+    
+    //FIXME: clear pending writes
+
+    return 0;
+}
+ 
+static int edpnet_sock_epollhup_handler(emit_t em, edp_event_t *ev){
+    struct edpnet_sock	*s;
+
+    s = emit_get(em);
+    ASSERT(s != NULL);
+
+    spi_spin_lock(&s->es_lock);
+    s->es_status &= ~kEDPNET_SOCK_STATUS_CONNECT;
+    spi_spin_unlock(&s->es_lock);
+
+    s->es_cbs->sock_close(s, s->es_data);
+	
+    //FIXME: clear pending writes
+
+    return 0;
+}
+
+void edpnet_sock_done(edp_event_t *ev, void *data, int errcode){
+    ASSERT(ev != NULL);
+
+    edpnet_free_event(ev);
+}
+
+int edpnet_sock_dispatch(struct edpnet_sock *sock, enum edpnet_sock_handler type){
+    edp_event_t	    *ev;
+    int		    ret;
+
+    ASSERT(sock != NULL);
+
+    ev = edpnet_alloc_event();
+    if(ev == NULL){
+	log_warn("alloc event fail\n");
+	return -ENOMEM;
+    }
+    edp_event_init(ev, (short)type, kEDP_EVENT_PRIORITY_NORM);
+
+    ret = emit_dispatch(sock->es_emit, ev, edpnet_sock_done, NULL);
+    if(ret != 0){
+	log_warn("dispatch event fail:%d\n", ret);
+	edpnet_free_event(ev);
+	return -1;
+    }
+
+    return 0;
+}
+
+static void sock_worker_cb(uint32_t events, void *data){
+    struct edpnet_sock	*s = (struct edpnet_sock *)data;
+
+    ASSERT(s != NULL);
+
+    if(events & EPOLLOUT){
+	edpnet_sock_dispatch(s, kEDPNET_SOCK_EPOLLOUT);
+    }
+
+    if(events & (EPOLLPRI | EPOLLIN)){
+	edpnet_sock_dispatch(s, kEDPNET_SOCK_EPOLLIN);
     }
 
     if(events & EPOLLERR){
-	s->es_cbs->sock_error(s, s->es_data);
-	//FIXME: clear pending writes
-   }
+	edpnet_sock_dispatch(s, kEDPNET_SOCK_EPOLLERR);
+    }
     
-    if(events | EPOLLHUP){
-	spi_spin_lock(&s->es_lock);
-	s->es_status &= ~kEDPNET_SOCK_STATUS_CONNECT;
-	spi_spin_unlock(&s->es_lock);
-
-	s->es_cbs->sock_close(s, s->es_data);
-	//FIXME: clear pending writes
+    if(events & EPOLLHUP){
+	edpnet_sock_dispatch(s, kEDPNET_SOCK_EPOLLHUP);
     }
 }
 
@@ -289,8 +398,6 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data){
     struct edpnet_sock	*s;
     int			ret;
 
-    log_info("sock create been called\n");
-
     if(!ed->ed_init){
 	log_warn("ednet not inited!\n");
 	return -1;
@@ -303,30 +410,35 @@ int edpnet_sock_create(edpnet_sock_t *sock, edpnet_sock_cbs_t *cbs, void *data){
     }
     memset(s, 0, sizeof(*s));
 
-    log_info("alloc memory for sock\n");
-    
+    ret = emit_create(s, &s->es_emit);
+    if(ret !=0 ){
+	log_warn("create emit fail:%d\n", ret);
+	return ret;
+    }
+    emit_add_handler(s->es_emit, kEDPNET_SOCK_EPOLLOUT, edpnet_sock_epollout_handler);
+    emit_add_handler(s->es_emit, kEDPNET_SOCK_EPOLLIN, edpnet_sock_epollin_handler);
+    emit_add_handler(s->es_emit, kEDPNET_SOCK_EPOLLERR, edpnet_sock_epollerr_handler);
+    emit_add_handler(s->es_emit, kEDPNET_SOCK_EPOLLHUP, edpnet_sock_epollhup_handler);
+
     s->es_sock = socket(PF_INET, SOCK_STREAM, 0);
     if(s->es_sock < 0){
 	log_warn("init sock failure!\n");
+	emit_destroy(s->es_emit);
 	mheap_free(s);
 	return -1;
     }
 
-    log_info("sock handle been created\n");
-
     ret = sock_init(s);
     if(ret != 0){
 	log_warn("initialize sock failure!\n");
+	emit_destroy(s->es_emit);
 	mheap_free(s);
 	return ret;
     }
 
-    log_info("sock data have been init\n");
-
     edpnet_sock_set(s, cbs, data);
     *sock = s;
 
-    log_info("sock been create ok\n");
     return 0;
 }
 
@@ -343,6 +455,7 @@ int edpnet_sock_destroy(edpnet_sock_t sock){
     sock_fini(sock);
     close(s->es_sock);
 
+    emit_destroy(s->es_emit);
     mheap_free(s);
 
     return 0;
@@ -358,8 +471,6 @@ int edpnet_sock_set(edpnet_sock_t sock, edpnet_sock_cbs_t *cbs, void *data){
 
     if(data != NULL)
 	s->es_data = data;
-
-    log_info("befor eio addfd\n");
 
     if(!(s->es_status & kEDPNET_SOCK_STATUS_MONITOR)){
         if(eio_addfd(s->es_sock, sock_worker_cb, s) != 0){
@@ -415,14 +526,21 @@ int edpnet_sock_write(edpnet_sock_t sock, ioctx_t *io, edpnet_writecb cb){
 	spi_spin_unlock(&s->es_lock);
 
 	ret = sock_write(s->es_sock, io);
-	if(ret < 0){
+	if(ret != 0){
+	    // ret < 0, write fail; ret > 0, data size ret have been writed.
+
 	    spi_spin_lock(&s->es_lock);
 	    s->es_write = NULL;
 	    spi_spin_unlock(&s->es_lock);
 
+	    // write fail or success, callback to caller
 	    cb(sock, io, ret);
 
-	    sock_write_next(s);
+	    // write another pending write io
+	    sock_write_next(s, 0);
+	}else{
+	    // write return EAGAIN or EWOULDBLOCK
+	    // do nothing
 	}
 
     }else{
@@ -653,6 +771,14 @@ int edpnet_init(){
 
     spi_spin_init(&ed->ed_lock);
 
+    if(mcache_create(sizeof(edp_event_t), sizeof(int), MCACHE_FLAGS_NOWAIT,
+		&ed->ed_evcache)){
+	spi_spin_fini(&ed->ed_lock);
+	eio_fini();
+
+	return -1;
+    }
+
     ed->ed_init = 1;
 
     return 0;
@@ -665,6 +791,7 @@ int edpnet_fini(){
 
     ed->ed_init = 0;
     spi_spin_fini(&ed->ed_lock);
+    mcache_destroy(ed->ed_evcache);
 
     return 0;
 }

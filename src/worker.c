@@ -135,8 +135,6 @@ static void *worker_routine(void *data){
 
     wkr->wk_status = kWORKER_STATUS_RUNNING;
 
-    log_info("worker initailized!\n");
-
     __spi_convar_signal(&wkr->wk_convar);
 
     while(wkr->wk_status != kWORKER_STATUS_STOP){
@@ -259,7 +257,7 @@ idle_event:
 	}
     }
 
-    log_info("worker loop break:%d\n", wkr->wk_status);
+    log_warn("worker loop break:%d\n", wkr->wk_status);
 
     ASSERT(wkr->wk_status == kWORKER_STATUS_STOP);
 

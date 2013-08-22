@@ -84,7 +84,6 @@ int eio_addfd(int fd,  eio_event_cb cb, void *data){
     struct epoll_event  ev;
     int			ret;
 
-    log_info("---------eio addfd -------\n");
     // construct ioe for epoll-wait callbacks
     ioe = mcache_alloc(iod->iod_evcache);
     if(ioe == NULL){
@@ -98,7 +97,6 @@ int eio_addfd(int fd,  eio_event_cb cb, void *data){
     ioe->ioe_ent.hse_hash = (uint32_t)fd;
     ioe->ioe_worker = iwk;
 
-    log_info("add fd & data to hset\n");
     spi_spin_lock(&iod->iod_lock);
     ret = hset_add(iod->iod_fds, &ioe->ioe_ent);
     spi_spin_unlock(&iod->iod_lock);
@@ -108,12 +106,9 @@ int eio_addfd(int fd,  eio_event_cb cb, void *data){
 	return -EEXIST;
     }
 
-    ev.events   = EPOLLIN | EPOLLOUT;
+    ev.events   = EPOLLIN | EPOLLOUT | EPOLLET;
     ev.data.ptr = ioe;
 
-    log_info("add fd to epoll\n");
-
-    log_info("call epoll ctl\n");
     ret = epoll_ctl(iwk->iwk_epoll, EPOLL_CTL_ADD, fd, &ev);
     if(ret != 0){
 	log_warn("epoll add watch fd:%d fail!\n", fd);
@@ -212,8 +207,6 @@ static void *eio_worker_routine(void *data){
     }
     memset(events, 0, msz);
 
-    log_info("eio worker routine running\n");
-
     // yes, I'm working
     __spi_convar_signal(&iwk->iwk_convar);
 
@@ -234,6 +227,7 @@ static void *eio_worker_routine(void *data){
 	    ioe->ioe_cb(ev->events, ioe->ioe_data);
 	    iwk->iwk_events ++;
 	}
+//	memset(events, 0, sizeof(*events)*evcnt);
     }
 
     eio_fini_tls(iwk);

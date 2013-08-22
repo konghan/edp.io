@@ -15,7 +15,7 @@ typedef struct sock_data{
 }sock_data_t;
 
 static const char __msg[] = "sock test string...\n\0";
-static const short __port = 4040;
+static const short __port = 2020;
 
 static sock_data_t  __sock_data = {};
 
@@ -54,6 +54,8 @@ static void ioctx_free(ioctx_t *ioc){
 
 void sock_write_cb(edpnet_sock_t sock, struct ioctx *ioc, int errcode){
     ioctx_free(ioc);
+
+    log_info("sock write callback\n");
 }
 
 static void sock_connect(edpnet_sock_t sock, void *data){
@@ -101,7 +103,20 @@ static void data_ready(edpnet_sock_t sock, void *data){
 }
 
 static void data_drain(edpnet_sock_t sock, void *data){
+    ioctx_t	*ioc;
+
     log_info("data drain for write\n");
+
+    ioc = ioctx_alloc(kIOCTX_IO_TYPE_SOCK, kSERV_IOBUF_MAX);
+    if(ioc == NULL){
+	log_warn("alloc ioctx fail\n");
+	return ;
+    }
+
+    strncpy(ioc->ioc_data, __msg, strlen(__msg));
+    ioc->ioc_size = strlen(__msg);
+
+    edpnet_sock_write(sock, ioc, sock_write_cb);
 }
 
 static void sock_error(edpnet_sock_t sock, void *data){
@@ -110,6 +125,7 @@ static void sock_error(edpnet_sock_t sock, void *data){
 
 static void sock_close(edpnet_sock_t sock, void *data){
     log_info("sock close\n");
+//    edpnet_sock_destroy(sock);
 }
 
 static int sock_init(){

@@ -18,7 +18,6 @@ struct edp_emit{
 
     spi_spinlock_t	ee_lock;
     atomic_t		ee_pendings;  
-//    struct list_head	ee_events;  // events belong to this edpu
     struct list_head	ee_node;    // link to emit master
 
     emit_handler	ee_handler[kEMIT_EVENT_TYPE_MAX];

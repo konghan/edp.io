@@ -7,6 +7,7 @@
 #define __EMITTER_H__
 
 #include "edp.h"
+#include "atomic.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -16,7 +17,6 @@ extern "C" {
 
 struct edp_emit;
 typedef struct edp_emit *emit_t;
-
 typedef int (*emit_handler)(emit_t em, edp_event_t *ev);
 
 int emit_dispatch(emit_t em, edp_event_t *ev, edp_event_cb cb, void *data);
